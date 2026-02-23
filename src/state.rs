@@ -3,7 +3,10 @@ use evo_common::config::{GatewayConfig, ProviderConfig, ProviderType};
 use reqwest::Client;
 use std::{
     collections::HashMap,
-    sync::{atomic::{AtomicUsize, Ordering}, Arc},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 use tokio::sync::RwLock;
 
@@ -128,7 +131,11 @@ impl AppState {
     /// All enabled pools for listing models.
     pub async fn all_enabled_pools(&self) -> Vec<Arc<ProviderPool>> {
         let pools = self.pools.read().await;
-        pools.values().filter(|p| p.config.enabled).cloned().collect()
+        pools
+            .values()
+            .filter(|p| p.config.enabled)
+            .cloned()
+            .collect()
     }
 
     /// Hot-reload: replace all pools from a new config (called by king).

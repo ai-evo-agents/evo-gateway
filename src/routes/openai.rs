@@ -10,10 +10,10 @@
 //!   "gpt-4o"                                   → auto-route (first enabled pool)
 
 use crate::{error::GatewayError, state::AppState};
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 use evo_common::config::ProviderType;
 use reqwest::RequestBuilder;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tracing::instrument;
 
@@ -26,17 +26,18 @@ pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(mut body): Json<Value>,
 ) -> Result<Json<Value>, GatewayError> {
-    let model_str = body["model"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let model_str = body["model"].as_str().unwrap_or("").to_string();
 
     let (provider_name, actual_model) = parse_provider_model(&model_str);
     tracing::Span::current().record("model", &actual_model);
 
     let pool = match provider_name {
         Some(name) => state.get_pool(name).await?,
-        None => state.get_preferred_pool(&["openai", "openrouter", "anthropic", "ollama"]).await?,
+        None => {
+            state
+                .get_preferred_pool(&["openai", "openrouter", "anthropic", "ollama"])
+                .await?
+        }
     };
 
     // Rewrite model field — strip the `provider:` prefix before forwarding
@@ -48,9 +49,7 @@ pub async fn chat_completions(
             let req = build_openai_request(&state, &pool, &url, &body)?;
             proxy_json(req).await
         }
-        ProviderType::Anthropic => {
-            anthropic_chat(&state, &pool, body).await
-        }
+        ProviderType::Anthropic => anthropic_chat(&state, &pool, body).await,
     }
 }
 
@@ -65,7 +64,11 @@ pub async fn embeddings(
 
     let pool = match provider_name {
         Some(name) => state.get_pool(name).await?,
-        None => state.get_preferred_pool(&["openai", "openrouter", "ollama"]).await?,
+        None => {
+            state
+                .get_preferred_pool(&["openai", "openrouter", "ollama"])
+                .await?
+        }
     };
 
     body["model"] = json!(actual_model);
@@ -76,9 +79,7 @@ pub async fn embeddings(
 
 /// GET /v1/models — list all enabled providers as model entries
 #[instrument(skip(state))]
-pub async fn list_models(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<Value>, GatewayError> {
+pub async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<Value>, GatewayError> {
     let pools = state.all_enabled_pools().await;
 
     let models: Vec<Value> = pools
@@ -129,12 +130,12 @@ async fn anthropic_chat(
     pool: &crate::state::ProviderPool,
     body: Value,
 ) -> Result<Json<Value>, GatewayError> {
-    let token = pool
-        .token_pool
-        .next_token()
-        .ok_or_else(|| GatewayError::ConfigError(format!(
-            "no API token configured for provider '{}'", pool.name()
-        )))?;
+    let token = pool.token_pool.next_token().ok_or_else(|| {
+        GatewayError::ConfigError(format!(
+            "no API token configured for provider '{}'",
+            pool.name()
+        ))
+    })?;
 
     let url = format!("{}/messages", pool.config.base_url);
 

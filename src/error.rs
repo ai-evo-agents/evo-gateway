@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde_json::json;
 use thiserror::Error;
@@ -31,12 +31,32 @@ pub enum GatewayError {
 impl IntoResponse for GatewayError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
-            Self::ProviderNotFound(_) => (StatusCode::NOT_FOUND, "PROVIDER_NOT_FOUND", self.to_string()),
-            Self::ProviderDisabled(_) => (StatusCode::SERVICE_UNAVAILABLE, "PROVIDER_DISABLED", self.to_string()),
+            Self::ProviderNotFound(_) => (
+                StatusCode::NOT_FOUND,
+                "PROVIDER_NOT_FOUND",
+                self.to_string(),
+            ),
+            Self::ProviderDisabled(_) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "PROVIDER_DISABLED",
+                self.to_string(),
+            ),
             Self::UpstreamError(_) => (StatusCode::BAD_GATEWAY, "UPSTREAM_ERROR", self.to_string()),
-            Self::ConfigError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "CONFIG_ERROR", self.to_string()),
-            Self::RateLimitExceeded(_) => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMIT_EXCEEDED", self.to_string()),
-            Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", self.to_string()),
+            Self::ConfigError(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "CONFIG_ERROR",
+                self.to_string(),
+            ),
+            Self::RateLimitExceeded(_) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "RATE_LIMIT_EXCEEDED",
+                self.to_string(),
+            ),
+            Self::Internal(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                self.to_string(),
+            ),
         };
 
         let body = Json(json!({

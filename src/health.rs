@@ -1,5 +1,5 @@
 use crate::state::AppState;
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{Json, extract::State, http::StatusCode};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -30,7 +30,13 @@ pub async fn health_handler(
     let mut provider_healths = Vec::with_capacity(pools.len());
 
     for pool in &pools {
-        let health = check_provider(client, pool.name(), &pool.config.base_url, pool.token_pool.len()).await;
+        let health = check_provider(
+            client,
+            pool.name(),
+            &pool.config.base_url,
+            pool.token_pool.len(),
+        )
+        .await;
         provider_healths.push(health);
     }
 
@@ -50,7 +56,12 @@ pub async fn health_handler(
     )
 }
 
-async fn check_provider(client: &Client, name: &str, base_url: &str, tokens: usize) -> ProviderHealth {
+async fn check_provider(
+    client: &Client,
+    name: &str,
+    base_url: &str,
+    tokens: usize,
+) -> ProviderHealth {
     let health_url = format!("{base_url}/");
     let start = std::time::Instant::now();
 

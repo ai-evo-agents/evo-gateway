@@ -1,9 +1,4 @@
-use axum::{
-    extract::Request,
-    http::HeaderValue,
-    middleware::Next,
-    response::Response,
-};
+use axum::{extract::Request, http::HeaderValue, middleware::Next, response::Response};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -13,10 +8,8 @@ pub async fn request_logging(mut req: Request, next: Next) -> Response {
     let method = req.method().clone();
     let uri = req.uri().clone();
 
-    req.headers_mut().insert(
-        "x-request-id",
-        HeaderValue::from_str(&request_id).unwrap(),
-    );
+    req.headers_mut()
+        .insert("x-request-id", HeaderValue::from_str(&request_id).unwrap());
 
     let span = tracing::info_span!(
         "http_request",

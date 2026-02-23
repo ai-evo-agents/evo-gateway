@@ -4,8 +4,8 @@ pub mod openai;
 
 use crate::state::AppState;
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 use std::sync::Arc;
 

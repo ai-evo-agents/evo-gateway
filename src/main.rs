@@ -5,7 +5,7 @@ mod routes;
 mod state;
 
 use anyhow::{Context, Result};
-use axum::{middleware::from_fn, routing::get, Router};
+use axum::{Router, middleware::from_fn, routing::get};
 use evo_common::{config::GatewayConfig, logging::init_logging};
 use state::AppState;
 use std::{net::SocketAddr, path::Path, sync::Arc};
@@ -18,8 +18,8 @@ async fn main() -> Result<()> {
     // Init structured logging — guard must stay alive for the process lifetime
     let _log_guard = init_logging("gateway");
 
-    let config_path = std::env::var("GATEWAY_CONFIG")
-        .unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
+    let config_path =
+        std::env::var("GATEWAY_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
 
     info!(config_path = %config_path, "loading gateway config");
 
@@ -48,9 +48,7 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("Failed to bind to {addr}"))?;
 
-    axum::serve(listener, app)
-        .await
-        .context("Server error")?;
+    axum::serve(listener, app).await.context("Server error")?;
 
     Ok(())
 }
@@ -68,8 +66,8 @@ fn load_config(path: &str) -> Result<GatewayConfig> {
         return Ok(default);
     }
 
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read {path}"))?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("Failed to read {path}"))?;
 
     GatewayConfig::from_json(&content)
         .with_context(|| format!("Failed to parse JSON config from {path}"))
@@ -110,7 +108,10 @@ fn default_config() -> GatewayConfig {
                 enabled: false,
                 provider_type: ProviderType::OpenAiCompatible,
                 extra_headers: HashMap::from([
-                    ("HTTP-Referer".to_string(), "https://github.com/ai-evo-agents".to_string()),
+                    (
+                        "HTTP-Referer".to_string(),
+                        "https://github.com/ai-evo-agents".to_string(),
+                    ),
                     ("X-Title".to_string(), "evo-gateway".to_string()),
                 ]),
                 rate_limit: None,

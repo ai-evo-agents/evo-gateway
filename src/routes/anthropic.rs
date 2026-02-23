@@ -1,5 +1,5 @@
 use crate::{error::GatewayError, state::AppState};
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::instrument;
@@ -15,12 +15,12 @@ pub async fn messages(
 ) -> Result<Json<Value>, GatewayError> {
     let pool = state.get_pool("anthropic").await?;
 
-    let token = pool
-        .token_pool
-        .next_token()
-        .ok_or_else(|| GatewayError::ConfigError(format!(
-            "no API token configured for provider '{}'", pool.name()
-        )))?;
+    let token = pool.token_pool.next_token().ok_or_else(|| {
+        GatewayError::ConfigError(format!(
+            "no API token configured for provider '{}'",
+            pool.name()
+        ))
+    })?;
 
     let url = format!("{}/messages", pool.config.base_url);
 
