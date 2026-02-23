@@ -1,29 +1,160 @@
+//! Unified handler for all LLM completion requests.
+//!
+//! Request model field format:  `"provider:model"` or just `"model"`.
+//!
+//! Examples:
+//!   "openai:gpt-4o"                           → OpenAI pool, model=gpt-4o
+//!   "anthropic:claude-3-5-sonnet-20241022"     → Anthropic pool
+//!   "openrouter:anthropic/claude-3.5-sonnet"  → OpenRouter pool (OR keeps full path)
+//!   "ollama:llama3.2"                          → local Ollama
+//!   "gpt-4o"                                   → auto-route (first enabled pool)
+
 use crate::{error::GatewayError, state::AppState};
 use axum::{extract::State, Json};
+use evo_common::config::ProviderType;
+use reqwest::RequestBuilder;
 use serde_json::{json, Value};
-use std::{env, sync::Arc};
+use std::sync::Arc;
 use tracing::instrument;
 
-/// POST /v1/chat/completions — proxies to the best available OpenAI-compatible provider.
-#[instrument(skip(state, body))]
+// ─── Public route handlers ────────────────────────────────────────────────────
+
+/// POST /v1/chat/completions
+/// Dispatches based on `provider:model` syntax in the `model` field.
+#[instrument(skip(state, body), fields(model))]
 pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<Value>,
+    Json(mut body): Json<Value>,
 ) -> Result<Json<Value>, GatewayError> {
-    let provider = state
-        .get_preferred_provider(&["openai", "anthropic", "ollama"])
-        .await?;
+    let model_str = body["model"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
 
-    let api_key = resolve_api_key(&provider.api_key_env);
-    let url = format!("{}/chat/completions", provider.base_url);
+    let (provider_name, actual_model) = parse_provider_model(&model_str);
+    tracing::Span::current().record("model", &actual_model);
 
-    let mut request = state.http_client.post(&url).json(&body);
+    let pool = match provider_name {
+        Some(name) => state.get_pool(name).await?,
+        None => state.get_preferred_pool(&["openai", "openrouter", "anthropic", "ollama"]).await?,
+    };
 
-    if let Some(key) = api_key {
-        request = request.bearer_auth(key);
+    // Rewrite model field — strip the `provider:` prefix before forwarding
+    body["model"] = json!(actual_model);
+
+    match pool.provider_type() {
+        ProviderType::OpenAiCompatible => {
+            let url = format!("{}/chat/completions", pool.config.base_url);
+            let req = build_openai_request(&state, &pool, &url, &body)?;
+            proxy_json(req).await
+        }
+        ProviderType::Anthropic => {
+            anthropic_chat(&state, &pool, body).await
+        }
+    }
+}
+
+/// POST /v1/embeddings
+#[instrument(skip(state, body))]
+pub async fn embeddings(
+    State(state): State<Arc<AppState>>,
+    Json(mut body): Json<Value>,
+) -> Result<Json<Value>, GatewayError> {
+    let model_str = body["model"].as_str().unwrap_or("").to_string();
+    let (provider_name, actual_model) = parse_provider_model(&model_str);
+
+    let pool = match provider_name {
+        Some(name) => state.get_pool(name).await?,
+        None => state.get_preferred_pool(&["openai", "openrouter", "ollama"]).await?,
+    };
+
+    body["model"] = json!(actual_model);
+    let url = format!("{}/embeddings", pool.config.base_url);
+    let req = build_openai_request(&state, &pool, &url, &body)?;
+    proxy_json(req).await
+}
+
+/// GET /v1/models — list all enabled providers as model entries
+#[instrument(skip(state))]
+pub async fn list_models(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Value>, GatewayError> {
+    let pools = state.all_enabled_pools().await;
+
+    let models: Vec<Value> = pools
+        .iter()
+        .map(|p| {
+            json!({
+                "id": p.name(),
+                "object": "model",
+                "owned_by": "evo-gateway",
+                "tokens_available": p.token_pool.len(),
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "object": "list",
+        "data": models,
+    })))
+}
+
+// ─── Provider-specific proxy logic ───────────────────────────────────────────
+
+/// Build an OpenAI-compatible request (Bearer auth + extra_headers).
+fn build_openai_request(
+    state: &AppState,
+    pool: &crate::state::ProviderPool,
+    url: &str,
+    body: &Value,
+) -> Result<RequestBuilder, GatewayError> {
+    let token = pool.token_pool.next_token();
+    let mut req = state.http_client.post(url).json(body);
+
+    if let Some(t) = token {
+        req = req.bearer_auth(t);
     }
 
-    let response = request.send().await.map_err(GatewayError::from)?;
+    // Inject provider-specific extra headers (e.g. OpenRouter's HTTP-Referer)
+    for (k, v) in &pool.config.extra_headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+
+    Ok(req)
+}
+
+/// Anthropic uses `x-api-key` + `anthropic-version` and a slightly different schema.
+async fn anthropic_chat(
+    state: &AppState,
+    pool: &crate::state::ProviderPool,
+    body: Value,
+) -> Result<Json<Value>, GatewayError> {
+    let token = pool
+        .token_pool
+        .next_token()
+        .ok_or_else(|| GatewayError::ConfigError(format!(
+            "no API token configured for provider '{}'", pool.name()
+        )))?;
+
+    let url = format!("{}/messages", pool.config.base_url);
+
+    let mut req = state
+        .http_client
+        .post(&url)
+        .header("x-api-key", token)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json");
+
+    for (k, v) in &pool.config.extra_headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+
+    proxy_json(req.json(&body)).await
+}
+
+/// Execute a prepared request and decode the JSON response.
+async fn proxy_json(req: RequestBuilder) -> Result<Json<Value>, GatewayError> {
+    let response = req.send().await.map_err(GatewayError::from)?;
     let status = response.status();
     let json: Value = response
         .json()
@@ -32,63 +163,45 @@ pub async fn chat_completions(
 
     if !status.is_success() {
         return Err(GatewayError::UpstreamError(format!(
-            "Provider returned {status}: {json}"
+            "upstream returned {status}: {json}"
         )));
     }
-
     Ok(Json(json))
 }
 
-/// POST /v1/embeddings — proxies to an embeddings-capable provider.
-#[instrument(skip(state, body))]
-pub async fn embeddings(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<Value>,
-) -> Result<Json<Value>, GatewayError> {
-    let provider = state.get_preferred_provider(&["openai", "ollama"]).await?;
-    let api_key = resolve_api_key(&provider.api_key_env);
-    let url = format!("{}/embeddings", provider.base_url);
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-    let mut request = state.http_client.post(&url).json(&body);
-    if let Some(key) = api_key {
-        request = request.bearer_auth(key);
+/// Parse `"provider:model"` → `(Some("provider"), "model")`.
+/// Bare `"model"` → `(None, "model")`.
+fn parse_provider_model(s: &str) -> (Option<&str>, &str) {
+    match s.split_once(':') {
+        Some((provider, model)) => (Some(provider), model),
+        None => (None, s),
     }
-
-    let response = request.send().await.map_err(GatewayError::from)?;
-    let json: Value = response
-        .json()
-        .await
-        .map_err(|e| GatewayError::UpstreamError(e.to_string()))?;
-
-    Ok(Json(json))
 }
 
-/// GET /v1/models — returns list of available models from all enabled providers.
-#[instrument(skip(state))]
-pub async fn list_models(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<Value>, GatewayError> {
-    let config = state.config.read().await;
-    let enabled_providers: Vec<&str> = config
-        .providers
-        .iter()
-        .filter(|p| p.enabled)
-        .map(|p| p.name.as_str())
-        .collect();
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    Ok(Json(json!({
-        "object": "list",
-        "data": enabled_providers.iter().map(|name| json!({
-            "id": name,
-            "object": "model",
-            "owned_by": "evo-gateway"
-        })).collect::<Vec<_>>()
-    })))
-}
-
-fn resolve_api_key(env_var: &str) -> Option<String> {
-    if env_var.is_empty() {
-        return None;
+    #[test]
+    fn parse_with_provider() {
+        let (p, m) = parse_provider_model("openai:gpt-4o");
+        assert_eq!(p, Some("openai"));
+        assert_eq!(m, "gpt-4o");
     }
-    env::var(env_var).ok()
+
+    #[test]
+    fn parse_openrouter_path() {
+        let (p, m) = parse_provider_model("openrouter:anthropic/claude-3.5-sonnet");
+        assert_eq!(p, Some("openrouter"));
+        assert_eq!(m, "anthropic/claude-3.5-sonnet");
+    }
+
+    #[test]
+    fn parse_bare_model() {
+        let (p, m) = parse_provider_model("gpt-4o-mini");
+        assert_eq!(p, None);
+        assert_eq!(m, "gpt-4o-mini");
+    }
 }

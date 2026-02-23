@@ -1,0 +1,43 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080
+  },
+  "providers": [
+    {
+      "name": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_envs": ["OPENAI_API_KEY"],
+      "enabled": true,
+      "provider_type": "open_ai_compatible",
+      "extra_headers": {}
+    },
+    {
+      "name": "anthropic",
+      "base_url": "https://api.anthropic.com/v1",
+      "api_key_envs": ["ANTHROPIC_API_KEY"],
+      "enabled": true,
+      "provider_type": "anthropic",
+      "extra_headers": {}
+    },
+    {
+      "name": "openrouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_envs": ["OPENROUTER_API_KEY"],
+      "enabled": false,
+      "provider_type": "open_ai_compatible",
+      "extra_headers": {
+        "HTTP-Referer": "https://github.com/ai-evo-agents",
+        "X-Title": "evo-gateway"
+      }
+    },
+    {
+      "name": "ollama",
+      "base_url": "http://localhost:11434",
+      "api_key_envs": [],
+      "enabled": false,
+      "provider_type": "open_ai_compatible",
+      "extra_headers": {}
+    }
+  ]
+}

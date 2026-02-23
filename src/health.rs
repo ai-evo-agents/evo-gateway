@@ -14,30 +14,32 @@ pub struct HealthResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProviderHealth {
     pub name: String,
-    pub enabled: bool,
+    pub tokens: usize,
     pub reachable: bool,
     pub latency_ms: Option<u64>,
 }
 
-/// GET /health — checks all configured providers and returns overall status.
+/// GET /health — probes all enabled provider base URLs and reports status.
 #[instrument(skip(state))]
-pub async fn health_handler(State(state): State<Arc<AppState>>) -> (StatusCode, Json<HealthResponse>) {
-    let config = state.config.read().await;
+pub async fn health_handler(
+    State(state): State<Arc<AppState>>,
+) -> (StatusCode, Json<HealthResponse>) {
+    let pools = state.all_enabled_pools().await;
     let client = state.http_client.as_ref();
 
-    let mut provider_healths = Vec::with_capacity(config.providers.len());
+    let mut provider_healths = Vec::with_capacity(pools.len());
 
-    for provider in &config.providers {
-        let health = check_provider(client, &provider.name, &provider.base_url).await;
+    for pool in &pools {
+        let health = check_provider(client, pool.name(), &pool.config.base_url, pool.token_pool.len()).await;
         provider_healths.push(health);
     }
 
-    let all_reachable = provider_healths
-        .iter()
-        .filter(|p| p.enabled)
-        .all(|p| p.reachable);
-
-    let status = if all_reachable { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    let all_reachable = provider_healths.iter().all(|p| p.reachable);
+    let status = if all_reachable {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
 
     (
         status,
@@ -48,7 +50,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> (StatusCode, 
     )
 }
 
-async fn check_provider(client: &Client, name: &str, base_url: &str) -> ProviderHealth {
+async fn check_provider(client: &Client, name: &str, base_url: &str, tokens: usize) -> ProviderHealth {
     let health_url = format!("{base_url}/");
     let start = std::time::Instant::now();
 
@@ -60,13 +62,13 @@ async fn check_provider(client: &Client, name: &str, base_url: &str) -> Provider
     {
         Ok(_) => ProviderHealth {
             name: name.to_string(),
-            enabled: true,
+            tokens,
             reachable: true,
             latency_ms: Some(start.elapsed().as_millis() as u64),
         },
         Err(_) => ProviderHealth {
             name: name.to_string(),
-            enabled: true,
+            tokens,
             reachable: false,
             latency_ms: None,
         },

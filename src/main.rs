@@ -11,7 +11,7 @@ use state::AppState;
 use std::{net::SocketAddr, path::Path, sync::Arc};
 use tracing::info;
 
-const DEFAULT_CONFIG_PATH: &str = "gateway.config";
+const DEFAULT_CONFIG_PATH: &str = "gateway.json";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -59,8 +59,10 @@ fn load_config(path: &str) -> Result<GatewayConfig> {
     if !Path::new(path).exists() {
         // Write a default config if none exists
         let default = default_config();
-        let toml = default.to_toml()?;
-        std::fs::write(path, &toml)
+        let json = default
+            .to_json()
+            .context("Failed to serialize default config")?;
+        std::fs::write(path, &json)
             .with_context(|| format!("Failed to write default config to {path}"))?;
         info!(path = %path, "wrote default gateway config");
         return Ok(default);
@@ -69,12 +71,13 @@ fn load_config(path: &str) -> Result<GatewayConfig> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read {path}"))?;
 
-    GatewayConfig::from_toml(&content)
-        .with_context(|| format!("Failed to parse config from {path}"))
+    GatewayConfig::from_json(&content)
+        .with_context(|| format!("Failed to parse JSON config from {path}"))
 }
 
 fn default_config() -> GatewayConfig {
-    use evo_common::config::{ProviderConfig, ServerConfig};
+    use evo_common::config::{ProviderConfig, ProviderType, ServerConfig};
+    use std::collections::HashMap;
 
     GatewayConfig {
         server: ServerConfig {
@@ -85,22 +88,40 @@ fn default_config() -> GatewayConfig {
             ProviderConfig {
                 name: "openai".to_string(),
                 base_url: "https://api.openai.com/v1".to_string(),
-                api_key_env: "OPENAI_API_KEY".to_string(),
+                api_key_envs: vec!["OPENAI_API_KEY".to_string()],
                 enabled: true,
+                provider_type: ProviderType::OpenAiCompatible,
+                extra_headers: HashMap::new(),
                 rate_limit: None,
             },
             ProviderConfig {
                 name: "anthropic".to_string(),
                 base_url: "https://api.anthropic.com/v1".to_string(),
-                api_key_env: "ANTHROPIC_API_KEY".to_string(),
+                api_key_envs: vec!["ANTHROPIC_API_KEY".to_string()],
                 enabled: true,
+                provider_type: ProviderType::Anthropic,
+                extra_headers: HashMap::new(),
+                rate_limit: None,
+            },
+            ProviderConfig {
+                name: "openrouter".to_string(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                api_key_envs: vec!["OPENROUTER_API_KEY".to_string()],
+                enabled: false,
+                provider_type: ProviderType::OpenAiCompatible,
+                extra_headers: HashMap::from([
+                    ("HTTP-Referer".to_string(), "https://github.com/ai-evo-agents".to_string()),
+                    ("X-Title".to_string(), "evo-gateway".to_string()),
+                ]),
                 rate_limit: None,
             },
             ProviderConfig {
                 name: "ollama".to_string(),
                 base_url: "http://localhost:11434".to_string(),
-                api_key_env: "".to_string(),
+                api_key_envs: vec![],
                 enabled: false,
+                provider_type: ProviderType::OpenAiCompatible,
+                extra_headers: HashMap::new(),
                 rate_limit: None,
             },
         ],

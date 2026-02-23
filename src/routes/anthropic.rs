@@ -1,31 +1,41 @@
 use crate::{error::GatewayError, state::AppState};
 use axum::{extract::State, Json};
 use serde_json::Value;
-use std::{env, sync::Arc};
+use std::sync::Arc;
 use tracing::instrument;
 
-/// POST /v1/messages — proxies to the Anthropic messages API.
+/// POST /v1/messages — proxies directly to the Anthropic Messages API (native format).
+///
+/// This endpoint accepts Anthropic's native request schema without translation.
+/// Use `/v1/chat/completions` with `"anthropic:<model>"` for OpenAI-compatible access.
 #[instrument(skip(state, body))]
 pub async fn messages(
     State(state): State<Arc<AppState>>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, GatewayError> {
-    let provider = state.get_provider("anthropic").await?;
-    let api_key = env::var(&provider.api_key_env)
-        .map_err(|_| GatewayError::ConfigError(format!("{} env var not set", provider.api_key_env)))?;
+    let pool = state.get_pool("anthropic").await?;
 
-    let url = format!("{}/messages", provider.base_url);
+    let token = pool
+        .token_pool
+        .next_token()
+        .ok_or_else(|| GatewayError::ConfigError(format!(
+            "no API token configured for provider '{}'", pool.name()
+        )))?;
 
-    let response = state
+    let url = format!("{}/messages", pool.config.base_url);
+
+    let mut req = state
         .http_client
         .post(&url)
-        .header("x-api-key", &api_key)
+        .header("x-api-key", token)
         .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(GatewayError::from)?;
+        .header("content-type", "application/json");
+
+    for (k, v) in &pool.config.extra_headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+
+    let response = req.json(&body).send().await.map_err(GatewayError::from)?;
 
     let status = response.status();
     let json: Value = response
