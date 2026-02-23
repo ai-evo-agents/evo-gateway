@@ -1,0 +1,7 @@
+/target
+logs/
+*.db
+api-key.config
+.env
+gateway-running.conf
+gateway-backup-*.config
