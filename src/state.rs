@@ -115,10 +115,10 @@ impl AppState {
     ) -> Result<Arc<ProviderPool>, GatewayError> {
         let pools = self.pools.read().await;
         for name in preferred {
-            if let Some(p) = pools.get(*name) {
-                if p.config.enabled {
-                    return Ok(Arc::clone(p));
-                }
+            if let Some(p) = pools.get(*name)
+                && p.config.enabled
+            {
+                return Ok(Arc::clone(p));
             }
         }
         pools

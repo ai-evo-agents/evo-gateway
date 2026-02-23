@@ -29,7 +29,7 @@ pub async fn chat_completions(
     let model_str = body["model"].as_str().unwrap_or("").to_string();
 
     let (provider_name, actual_model) = parse_provider_model(&model_str);
-    tracing::Span::current().record("model", &actual_model);
+    tracing::Span::current().record("model", actual_model);
 
     let pool = match provider_name {
         Some(name) => state.get_pool(name).await?,

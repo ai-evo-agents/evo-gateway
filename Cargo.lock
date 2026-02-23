@@ -247,7 +247,7 @@ dependencies = [
 [[package]]
 name = "evo-common"
 version = "0.1.0"
-source = "git+https://github.com/ai-evo-agents/evo-common.git#3aa88a4c50d27f5d48babc4f4918661d9150af00"
+source = "git+https://github.com/ai-evo-agents/evo-common.git#6e981564899178e4e45407dee8c0c7bcf749c3f4"
 dependencies = [
  "chrono",
  "serde",
@@ -859,7 +859,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
