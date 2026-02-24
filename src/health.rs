@@ -1,5 +1,6 @@
 use crate::state::AppState;
 use axum::{Json, extract::State, http::StatusCode};
+use evo_common::config::ProviderType;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -30,13 +31,18 @@ pub async fn health_handler(
     let mut provider_healths = Vec::with_capacity(pools.len());
 
     for pool in &pools {
-        let health = check_provider(
-            client,
-            pool.name(),
-            &pool.config.base_url,
-            pool.token_pool.len(),
-        )
-        .await;
+        let health = match pool.provider_type() {
+            ProviderType::Cursor => check_cursor_provider(pool.name()).await,
+            _ => {
+                check_provider(
+                    client,
+                    pool.name(),
+                    &pool.config.base_url,
+                    pool.token_pool.len(),
+                )
+                .await
+            }
+        };
         provider_healths.push(health);
     }
 
@@ -54,6 +60,18 @@ pub async fn health_handler(
             providers: provider_healths,
         }),
     )
+}
+
+/// Health check for the Cursor provider — runs `cursor-agent status` subprocess.
+async fn check_cursor_provider(name: &str) -> ProviderHealth {
+    let start = std::time::Instant::now();
+    let (reachable, _email) = crate::cursor::check_cursor_status().await;
+    ProviderHealth {
+        name: name.to_string(),
+        tokens: 0,
+        reachable,
+        latency_ms: Some(start.elapsed().as_millis() as u64),
+    }
 }
 
 async fn check_provider(

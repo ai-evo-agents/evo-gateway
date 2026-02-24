@@ -60,6 +60,14 @@ pub async fn chat_completions(
             }
         }
         ProviderType::Anthropic => anthropic_chat(&state, &pool, body).await,
+        ProviderType::Cursor => {
+            if is_streaming(&body) {
+                crate::cursor::cursor_chat_streaming(&body, actual_model).await
+            } else {
+                let json = crate::cursor::cursor_chat(&body, actual_model).await?;
+                Ok(Json(json).into_response())
+            }
+        }
     }
 }
 
