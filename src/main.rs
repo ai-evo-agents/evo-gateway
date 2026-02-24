@@ -170,7 +170,9 @@ async fn run_cursor_auth() -> Result<()> {
         .unwrap_or_else(|| "unknown".into());
 
     // Step 3: Save auth status to DB
-    let db = crate::db::init_db().await.context("Failed to initialize database")?;
+    let db = crate::db::init_db()
+        .await
+        .context("Failed to initialize database")?;
     let conn = db.connect().context("Failed to connect to database")?;
     crate::db::save_cursor_auth(&conn, &email)
         .await

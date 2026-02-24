@@ -43,7 +43,9 @@ pub fn extract_prompt(body: &Value) -> Result<String, GatewayError> {
         .ok_or_else(|| GatewayError::ConfigError("missing 'messages' array".into()))?;
 
     if messages.is_empty() {
-        return Err(GatewayError::ConfigError("'messages' array is empty".into()));
+        return Err(GatewayError::ConfigError(
+            "'messages' array is empty".into(),
+        ));
     }
 
     let mut parts = Vec::with_capacity(messages.len());
@@ -220,9 +222,10 @@ pub async fn cursor_chat_streaming(body: &Value, model: &str) -> Result<Response
         ))
     })?;
 
-    let stdout = child.stdout.take().ok_or_else(|| {
-        GatewayError::Internal("failed to capture cursor-agent stdout".into())
-    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| GatewayError::Internal("failed to capture cursor-agent stdout".into()))?;
 
     let model = model.to_string();
     let id = uuid::Uuid::new_v4().to_string();
@@ -317,7 +320,10 @@ pub async fn cursor_chat_streaming(body: &Value, model: &str) -> Result<Response
     }));
 
     let mut headers = HeaderMap::new();
-    headers.insert("content-type", HeaderValue::from_static("text/event-stream"));
+    headers.insert(
+        "content-type",
+        HeaderValue::from_static("text/event-stream"),
+    );
     headers.insert("cache-control", HeaderValue::from_static("no-cache"));
     headers.insert("connection", HeaderValue::from_static("keep-alive"));
 
@@ -375,9 +381,7 @@ fn find_result_line(stdout: &str) -> Result<Value, GatewayError> {
         .find(|l| !l.trim().is_empty())
         .unwrap_or("");
     serde_json::from_str(last_line).map_err(|e| {
-        GatewayError::UpstreamError(format!(
-            "failed to parse cursor-agent output as JSON: {e}"
-        ))
+        GatewayError::UpstreamError(format!("failed to parse cursor-agent output as JSON: {e}"))
     })
 }
 

@@ -67,7 +67,10 @@ pub async fn get_cursor_auth(conn: &Connection) -> Result<Option<CursorAuth>> {
         .await
         .context("Failed to query cursor auth")?;
 
-    let row = rows.next().await.context("Failed to read cursor auth row")?;
+    let row = rows
+        .next()
+        .await
+        .context("Failed to read cursor auth row")?;
     match row {
         Some(row) => {
             let status: String = row.get(0).context("Failed to read status column")?;
