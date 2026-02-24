@@ -33,6 +33,7 @@ pub async fn health_handler(
     for pool in &pools {
         let health = match pool.provider_type() {
             ProviderType::Cursor => check_cursor_provider(pool.name()).await,
+            ProviderType::ClaudeCode => check_claude_code_provider(pool.name()).await,
             _ => {
                 check_provider(
                     client,
@@ -66,6 +67,18 @@ pub async fn health_handler(
 async fn check_cursor_provider(name: &str) -> ProviderHealth {
     let start = std::time::Instant::now();
     let (reachable, _email) = crate::cursor::check_cursor_status().await;
+    ProviderHealth {
+        name: name.to_string(),
+        tokens: 0,
+        reachable,
+        latency_ms: Some(start.elapsed().as_millis() as u64),
+    }
+}
+
+/// Health check for the Claude Code provider — runs `claude --version`.
+async fn check_claude_code_provider(name: &str) -> ProviderHealth {
+    let start = std::time::Instant::now();
+    let (reachable, _version) = crate::claude_code::check_claude_code_status().await;
     ProviderHealth {
         name: name.to_string(),
         tokens: 0,

@@ -583,9 +583,8 @@ dependencies = [
 
 [[package]]
 name = "evo-common"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f64d827669568a4b0dc9b518397af14be6e99e953184d8b8af36a80417fc6b5"
+version = "0.4.0"
+source = "git+https://github.com/ai-evo-agents/evo-common.git?branch=main#af89ad22fbc6435034fed7ab4b4fef1d403636c3"
 dependencies = [
  "chrono",
  "serde",
@@ -598,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "evo-gateway"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-stream",

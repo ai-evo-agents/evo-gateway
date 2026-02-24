@@ -1,6 +1,6 @@
 # evo-gateway
 
-API aggregator for the Evo self-evolution agent system. Provides a unified API interface over multiple LLM providers (OpenAI, Anthropic, Cursor, local LLMs via Ollama/vLLM), so agents in the Evo system make all external API calls through a single, configurable gateway.
+API aggregator for the Evo self-evolution agent system. Provides a unified API interface over multiple LLM providers (OpenAI, Anthropic, Cursor, Claude Code, local LLMs via Ollama/vLLM), so agents in the Evo system make all external API calls through a single, configurable gateway.
 
 Supports **SSE streaming** for AI coding tools (Codex CLI, Cursor, Claude Code) and optional **API key authentication** for shared deployments.
 
@@ -35,6 +35,8 @@ Client Request
       |                                         |
       +---> POST /api/generate            -->   +---> Cursor proxy (via cursor-agent CLI)
       +---> POST /api/chat                -->   |
+                                                +---> Claude Code proxy (via claude CLI)
+                                                |
                                                 +---> Local LLM proxy (Ollama / vLLM)
                                           (routing by config / model prefix)
 
@@ -213,6 +215,14 @@ The gateway reads `gateway.json` at startup (auto-generated with defaults if mis
       "enabled": false,
       "provider_type": "cursor",
       "extra_headers": {}
+    },
+    {
+      "name": "claude-code",
+      "base_url": "",
+      "api_key_envs": [],
+      "enabled": false,
+      "provider_type": "claude_code",
+      "extra_headers": {}
     }
   ]
 }
@@ -250,6 +260,7 @@ The OpenAI-compatible endpoint supports `"model": "provider:model"` syntax:
 { "model": "anthropic:claude-opus-4-5", "messages": [...] }
 { "model": "openrouter:meta-llama/llama-3.3-70b-instruct", "messages": [...] }
 { "model": "cursor:auto", "messages": [...] }
+{ "model": "claude-code:sonnet", "messages": [...] }
 ```
 
 If no provider prefix is given, the first enabled provider is used by default.
@@ -269,7 +280,9 @@ evo-gateway/
     error.rs              # GatewayError → HTTP response mapping
     health.rs             # GET /health handler
     auth.rs               # AuthStore — key generation, hashing, verification
+    cli_common.rs         # Shared helpers for CLI-subprocess providers (prompt, response, SSE)
     cursor.rs             # Cursor provider — cursor-agent CLI integration (chat + streaming)
+    claude_code.rs        # Claude Code provider — claude CLI integration (chat + streaming)
     db.rs                 # Local libSQL database for credential storage (cursor auth)
     routes/
       mod.rs              # Route registry
@@ -325,6 +338,9 @@ cargo clippy -- -D warnings
 | `CURSOR_AGENT_BINARY` | `cursor-agent` | Path to the cursor-agent binary |
 | `CURSOR_MAX_CONCURRENT` | `4` | Max concurrent cursor-agent processes |
 | `CURSOR_TIMEOUT_SECS` | `120` | Per-request timeout for cursor-agent (seconds) |
+| `CLAUDE_CODE_BINARY` | `claude` | Path to the Claude Code CLI binary |
+| `CLAUDE_CODE_MAX_CONCURRENT` | `4` | Max concurrent claude processes |
+| `CLAUDE_CODE_TIMEOUT_SECS` | `300` | Per-request timeout for claude (seconds) |
 | `EVO_GATEWAY_DB_PATH` | `gateway.db` | Path to local libSQL database for credentials |
 | `RUST_LOG` | `info` | Log level filter |
 | `EVO_LOG_DIR` | `./logs` | Structured log output directory |

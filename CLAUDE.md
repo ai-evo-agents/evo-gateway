@@ -46,6 +46,9 @@ cargo run --bin evo-gateway-cli -- auth revoke --name my-key
 | `OPENROUTER_API_KEY` | — | OpenRouter API key |
 | `EVO_GATEWAY_AUTH` | `false` | Enable API key authentication (`true` or `1`) |
 | `EVO_GATEWAY_AUTH_KEYS` | `auth.json` | Path to auth keys JSON file |
+| `CLAUDE_CODE_BINARY` | `claude` | Path to the Claude Code CLI binary |
+| `CLAUDE_CODE_MAX_CONCURRENT` | `4` | Max concurrent claude processes |
+| `CLAUDE_CODE_TIMEOUT_SECS` | `300` | Per-request timeout for claude (seconds) |
 | `EVO_LOG_DIR` | `./logs` | Log output directory |
 | `RUST_LOG` | `info` | Log level filter |
 
@@ -134,6 +137,9 @@ src/
 ├── error.rs         — GatewayError → HTTP response mapping
 ├── health.rs        — GET /health handler
 ├── auth.rs          — AuthStore (key generation, hashing, verification)
+├── cli_common.rs    — shared helpers for CLI-subprocess providers
+├── cursor.rs        — Cursor provider (cursor-agent CLI)
+├── claude_code.rs   — Claude Code provider (claude CLI)
 ├── middleware/
 │   ├── mod.rs       — request logging middleware (tracing)
 │   └── auth.rs      — authentication middleware (Bearer + x-api-key)

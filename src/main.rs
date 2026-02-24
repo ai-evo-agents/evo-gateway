@@ -1,3 +1,5 @@
+mod claude_code;
+mod cli_common;
 mod cursor;
 mod db;
 mod error;
@@ -77,6 +79,9 @@ async fn main() -> Result<()> {
 
     // Check cursor auth status on startup
     check_cursor_auth_status().await;
+
+    // Check claude code availability on startup
+    check_claude_code_availability().await;
 
     // Auth configuration
     let auth_enabled = std::env::var("EVO_GATEWAY_AUTH")
@@ -213,6 +218,21 @@ async fn check_cursor_auth_status() {
     }
 }
 
+/// Check and log Claude Code CLI availability on server startup.
+async fn check_claude_code_availability() {
+    let (available, version) = crate::claude_code::check_claude_code_status().await;
+    if available {
+        info!(
+            version = ?version,
+            "claude code CLI available"
+        );
+    } else {
+        info!(
+            "claude code CLI not found — claude-code provider will not work until `claude` is installed"
+        );
+    }
+}
+
 fn load_config(path: &str) -> Result<GatewayConfig> {
     if !Path::new(path).exists() {
         // Write a default config if none exists
@@ -291,6 +311,15 @@ fn default_config() -> GatewayConfig {
                 api_key_envs: vec![],
                 enabled: false,
                 provider_type: ProviderType::Cursor,
+                extra_headers: HashMap::new(),
+                rate_limit: None,
+            },
+            ProviderConfig {
+                name: "claude-code".to_string(),
+                base_url: String::new(),
+                api_key_envs: vec![],
+                enabled: false,
+                provider_type: ProviderType::ClaudeCode,
                 extra_headers: HashMap::new(),
                 rate_limit: None,
             },

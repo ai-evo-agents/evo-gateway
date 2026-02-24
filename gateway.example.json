@@ -46,6 +46,14 @@
       "enabled": false,
       "provider_type": "cursor",
       "extra_headers": {}
+    },
+    {
+      "name": "claude-code",
+      "base_url": "",
+      "api_key_envs": [],
+      "enabled": false,
+      "provider_type": "claude_code",
+      "extra_headers": {}
     }
   ]
 }

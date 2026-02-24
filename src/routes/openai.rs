@@ -68,6 +68,14 @@ pub async fn chat_completions(
                 Ok(Json(json).into_response())
             }
         }
+        ProviderType::ClaudeCode => {
+            if is_streaming(&body) {
+                crate::claude_code::claude_code_chat_streaming(&body, actual_model).await
+            } else {
+                let json = crate::claude_code::claude_code_chat(&body, actual_model).await?;
+                Ok(Json(json).into_response())
+            }
+        }
     }
 }
 

@@ -1,8 +1,9 @@
+use crate::cli_common::{build_openai_response, build_sse_chunk, extract_prompt};
 use crate::error::GatewayError;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::sync::LazyLock;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::Semaphore;
@@ -28,93 +29,6 @@ fn timeout_secs() -> u64 {
 /// Path to the cursor-agent binary (env: CURSOR_AGENT_BINARY, default: "cursor-agent").
 fn cursor_binary() -> String {
     std::env::var("CURSOR_AGENT_BINARY").unwrap_or_else(|_| "cursor-agent".into())
-}
-
-// ─── Prompt extraction ──────────────────────────────────────────────────────
-
-/// Concatenate the OpenAI messages array into a single prompt string.
-///
-/// - `system` → `[System]: <content>`
-/// - `user` → `<content>`
-/// - `assistant` → `[Previous assistant]: <content>`
-pub fn extract_prompt(body: &Value) -> Result<String, GatewayError> {
-    let messages = body["messages"]
-        .as_array()
-        .ok_or_else(|| GatewayError::ConfigError("missing 'messages' array".into()))?;
-
-    if messages.is_empty() {
-        return Err(GatewayError::ConfigError(
-            "'messages' array is empty".into(),
-        ));
-    }
-
-    let mut parts = Vec::with_capacity(messages.len());
-
-    for msg in messages {
-        let role = msg["role"].as_str().unwrap_or("user");
-        let content = msg["content"].as_str().unwrap_or("");
-        match role {
-            "system" => parts.push(format!("[System]: {content}")),
-            "assistant" => parts.push(format!("[Previous assistant]: {content}")),
-            _ => parts.push(content.to_string()),
-        }
-    }
-
-    Ok(parts.join("\n\n"))
-}
-
-// ─── Response builders ──────────────────────────────────────────────────────
-
-/// Build an OpenAI-compatible chat.completion response from cursor-agent output.
-pub fn build_openai_response(content: &str, model: &str, request_id: &str) -> Value {
-    json!({
-        "id": format!("chatcmpl-{request_id}"),
-        "object": "chat.completion",
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": content,
-            },
-            "finish_reason": "stop",
-        }],
-        "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        },
-    })
-}
-
-/// Build a single SSE chunk in OpenAI streaming format.
-///
-/// If `finish` is true, produces a `finish_reason: "stop"` delta with no content.
-pub fn build_sse_chunk(content: &str, model: &str, id: &str, finish: bool) -> String {
-    let data = if finish {
-        json!({
-            "id": format!("chatcmpl-{id}"),
-            "object": "chat.completion.chunk",
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "delta": {},
-                "finish_reason": "stop",
-            }],
-        })
-    } else {
-        json!({
-            "id": format!("chatcmpl-{id}"),
-            "object": "chat.completion.chunk",
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "delta": { "content": content },
-                "finish_reason": null,
-            }],
-        })
-    };
-    format!("data: {data}\n\n")
 }
 
 // ─── Non-streaming ──────────────────────────────────────────────────────────
@@ -388,69 +302,6 @@ fn find_result_line(stdout: &str) -> Result<Value, GatewayError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_extract_prompt_basic() {
-        let body = json!({
-            "messages": [
-                {"role": "system", "content": "You are helpful."},
-                {"role": "user", "content": "Hello"},
-            ]
-        });
-        let prompt = extract_prompt(&body).unwrap();
-        assert!(prompt.contains("[System]: You are helpful."));
-        assert!(prompt.contains("Hello"));
-    }
-
-    #[test]
-    fn test_extract_prompt_with_assistant() {
-        let body = json!({
-            "messages": [
-                {"role": "user", "content": "Hi"},
-                {"role": "assistant", "content": "Hello!"},
-                {"role": "user", "content": "How are you?"},
-            ]
-        });
-        let prompt = extract_prompt(&body).unwrap();
-        assert!(prompt.contains("[Previous assistant]: Hello!"));
-        assert!(prompt.contains("How are you?"));
-    }
-
-    #[test]
-    fn test_extract_prompt_empty() {
-        let body = json!({"messages": []});
-        assert!(extract_prompt(&body).is_err());
-    }
-
-    #[test]
-    fn test_extract_prompt_missing() {
-        let body = json!({"model": "test"});
-        assert!(extract_prompt(&body).is_err());
-    }
-
-    #[test]
-    fn test_build_openai_response() {
-        let resp = build_openai_response("Hello world", "auto", "req-123");
-        assert_eq!(resp["object"], "chat.completion");
-        assert_eq!(resp["choices"][0]["message"]["content"], "Hello world");
-        assert_eq!(resp["choices"][0]["finish_reason"], "stop");
-        assert_eq!(resp["model"], "auto");
-    }
-
-    #[test]
-    fn test_build_sse_chunk_content() {
-        let chunk = build_sse_chunk("Hello", "auto", "id1", false);
-        assert!(chunk.starts_with("data: "));
-        assert!(chunk.contains("\"content\":\"Hello\""));
-        assert!(chunk.contains("\"finish_reason\":null"));
-    }
-
-    #[test]
-    fn test_build_sse_chunk_finish() {
-        let chunk = build_sse_chunk("", "auto", "id1", true);
-        assert!(chunk.contains("\"finish_reason\":\"stop\""));
-        assert!(!chunk.contains("\"content\""));
-    }
 
     #[test]
     fn test_find_result_line() {
