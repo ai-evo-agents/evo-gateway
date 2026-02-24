@@ -247,7 +247,8 @@ dependencies = [
 [[package]]
 name = "evo-common"
 version = "0.1.0"
-source = "git+https://github.com/ai-evo-agents/evo-common.git#6e981564899178e4e45407dee8c0c7bcf749c3f4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c259580c9811ca764cab80f396647603f457407ea3fe642a318a0a34ccd9c9b4"
 dependencies = [
  "chrono",
  "serde",
