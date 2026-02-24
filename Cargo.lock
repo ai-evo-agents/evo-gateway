@@ -583,7 +583,9 @@ dependencies = [
 
 [[package]]
 name = "evo-common"
-version = "0.2.0"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f64d827669568a4b0dc9b518397af14be6e99e953184d8b8af36a80417fc6b5"
 dependencies = [
  "chrono",
  "serde",
