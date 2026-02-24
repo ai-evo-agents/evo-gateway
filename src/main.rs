@@ -47,6 +47,10 @@ enum Commands {
 enum AuthCommands {
     /// Authenticate with Cursor via browser OAuth
     Cursor,
+    /// Authenticate with Claude Code CLI
+    Claude,
+    /// Authenticate with Codex CLI
+    Codex,
 }
 
 #[tokio::main]
@@ -60,6 +64,8 @@ async fn main() -> Result<()> {
     if let Some(Commands::Auth { action }) = cli.command {
         return match action {
             AuthCommands::Cursor => run_cursor_auth().await,
+            AuthCommands::Claude => run_claude_auth().await,
+            AuthCommands::Codex => run_codex_auth().await,
         };
     }
 
@@ -83,9 +89,11 @@ async fn main() -> Result<()> {
 
     // Check claude code availability on startup
     check_claude_code_availability().await;
+    check_provider_auth_status("claude-code").await;
 
     // Check codex CLI availability on startup
     check_codex_cli_availability().await;
+    check_provider_auth_status("codex-cli").await;
 
     // Auth configuration
     let auth_enabled = std::env::var("EVO_GATEWAY_AUTH")
@@ -194,6 +202,109 @@ async fn run_cursor_auth() -> Result<()> {
     Ok(())
 }
 
+/// Interactive Claude Code CLI authentication flow.
+///
+/// Runs `claude` with inherited stdio so the user can complete auth interactively.
+async fn run_claude_auth() -> Result<()> {
+    use std::process::Stdio;
+
+    let binary = std::env::var("CLAUDE_CODE_BINARY").unwrap_or_else(|_| "claude".into());
+
+    println!("Starting Claude Code authentication...");
+    println!("This will run `{binary}` — complete the auth flow in the terminal.\n");
+
+    let status = tokio::process::Command::new(&binary)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .with_context(|| {
+            format!("Failed to run '{binary}'. Is Claude Code CLI installed?")
+        })?;
+
+    if !status.success() {
+        anyhow::bail!("{binary} exited with code: {status}");
+    }
+
+    // Capture version after successful run
+    let output = tokio::process::Command::new(&binary)
+        .arg("--version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .with_context(|| format!("Failed to run '{binary} --version'"))?;
+
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    let db = crate::db::init_db()
+        .await
+        .context("Failed to initialize database")?;
+    let conn = db.connect().context("Failed to connect to database")?;
+    crate::db::save_provider_auth(&conn, "claude-code", &version)
+        .await
+        .context("Failed to save claude auth")?;
+
+    println!("\nClaude Code authenticated successfully!");
+    if !version.is_empty() {
+        println!("  Version: {version}");
+    }
+    println!("\nEnable claude-code in your gateway.json by setting claude-code.enabled = true");
+
+    Ok(())
+}
+
+/// Interactive Codex CLI authentication flow.
+async fn run_codex_auth() -> Result<()> {
+    use std::process::Stdio;
+
+    let binary = std::env::var("CODEX_CLI_BINARY").unwrap_or_else(|_| "codex".into());
+
+    println!("Starting Codex CLI authentication...");
+    println!("This will run `{binary}` — complete the auth flow in the terminal.\n");
+
+    let status = tokio::process::Command::new(&binary)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .with_context(|| {
+            format!("Failed to run '{binary}'. Is Codex CLI installed?")
+        })?;
+
+    if !status.success() {
+        anyhow::bail!("{binary} exited with code: {status}");
+    }
+
+    let output = tokio::process::Command::new(&binary)
+        .arg("--version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .with_context(|| format!("Failed to run '{binary} --version'"))?;
+
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    let db = crate::db::init_db()
+        .await
+        .context("Failed to initialize database")?;
+    let conn = db.connect().context("Failed to connect to database")?;
+    crate::db::save_provider_auth(&conn, "codex-cli", &version)
+        .await
+        .context("Failed to save codex auth")?;
+
+    println!("\nCodex CLI authenticated successfully!");
+    if !version.is_empty() {
+        println!("  Version: {version}");
+    }
+    println!("\nEnable codex-cli in your gateway.json by setting codex-cli.enabled = true");
+
+    Ok(())
+}
+
 /// Check and log cursor auth status on server startup.
 async fn check_cursor_auth_status() {
     match crate::db::init_db().await {
@@ -247,6 +358,41 @@ async fn check_codex_cli_availability() {
         );
     } else {
         info!("codex CLI not found — codex-cli provider will not work until `codex` is installed");
+    }
+}
+
+/// Check and log a provider's auth status on server startup.
+async fn check_provider_auth_status(provider: &str) {
+    match crate::db::init_db().await {
+        Ok(db) => {
+            if let Ok(conn) = db.connect() {
+                match crate::db::get_provider_auth(&conn, provider).await {
+                    Ok(Some(auth)) => {
+                        info!(
+                            provider = %provider,
+                            status = %auth.status,
+                            "provider auth status"
+                        );
+                    }
+                    Ok(None) => {
+                        info!(
+                            provider = %provider,
+                            "provider not authenticated — run `evo-gateway auth {provider}` to set up"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(provider = %provider, error = %e, "failed to check provider auth");
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                provider = %provider,
+                error = %e,
+                "failed to init gateway database (auth check skipped)"
+            );
+        }
     }
 }
 

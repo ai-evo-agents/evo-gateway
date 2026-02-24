@@ -42,12 +42,19 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: Use crates.io dependencies
+        shell: bash
+        run: |
+          sed -i.bak 's|evo-common.*=.*{.*path.*=.*"[^"]*".*}|evo-common = "0.6"|' Cargo.toml
+          rm -f Cargo.toml.bak
+
       - name: Build (cross)
-        uses: houseabsolute/actions-rust-cross@v0
+        uses: houseabsolute/actions-rust-cross@v1
         with:
           command: build
           target: ${{ matrix.target }}
-          args: "--locked --release"
+          args: "--release"
+          toolchain: stable
           strip: true
 
       - name: Package

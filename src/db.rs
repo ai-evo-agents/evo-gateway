@@ -4,9 +4,9 @@ use tracing::info;
 
 const DEFAULT_DB_PATH: &str = "gateway.db";
 
-/// Credential record for the Cursor provider.
+/// Credential record for any provider (cursor, claude-code, codex-cli, etc.).
 #[derive(Debug, Clone)]
-pub struct CursorAuth {
+pub struct ProviderAuth {
     pub status: String,
     pub email: Option<String>,
 }
@@ -40,43 +40,53 @@ pub async fn init_db() -> Result<Database> {
     Ok(db)
 }
 
-/// Store (upsert) cursor authentication status.
-pub async fn save_cursor_auth(conn: &Connection, email: &str) -> Result<()> {
+/// Store (upsert) provider authentication status.
+pub async fn save_provider_auth(conn: &Connection, provider: &str, email: &str) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO credentials (provider, status, email, updated_at)
-         VALUES ('cursor', 'authenticated', ?1, ?2)
+         VALUES (?1, 'authenticated', ?2, ?3)
          ON CONFLICT(provider) DO UPDATE SET
            status = 'authenticated',
            email = excluded.email,
            updated_at = excluded.updated_at",
-        libsql::params![email, now],
+        libsql::params![provider, email, now],
     )
     .await
-    .context("Failed to save cursor auth")?;
+    .with_context(|| format!("Failed to save {provider} auth"))?;
     Ok(())
 }
 
-/// Check if cursor is authenticated. Returns `None` if no record exists.
-pub async fn get_cursor_auth(conn: &Connection) -> Result<Option<CursorAuth>> {
+/// Check if a provider is authenticated. Returns `None` if no record exists.
+pub async fn get_provider_auth(conn: &Connection, provider: &str) -> Result<Option<ProviderAuth>> {
     let mut rows = conn
         .query(
-            "SELECT status, email FROM credentials WHERE provider = 'cursor'",
-            (),
+            "SELECT status, email FROM credentials WHERE provider = ?1",
+            libsql::params![provider],
         )
         .await
-        .context("Failed to query cursor auth")?;
+        .with_context(|| format!("Failed to query {provider} auth"))?;
 
     let row = rows
         .next()
         .await
-        .context("Failed to read cursor auth row")?;
+        .with_context(|| format!("Failed to read {provider} auth row"))?;
     match row {
         Some(row) => {
             let status: String = row.get(0).context("Failed to read status column")?;
             let email: Option<String> = row.get(1).ok();
-            Ok(Some(CursorAuth { status, email }))
+            Ok(Some(ProviderAuth { status, email }))
         }
         None => Ok(None),
     }
+}
+
+/// Store (upsert) cursor authentication status.
+pub async fn save_cursor_auth(conn: &Connection, email: &str) -> Result<()> {
+    save_provider_auth(conn, "cursor", email).await
+}
+
+/// Check if cursor is authenticated. Returns `None` if no record exists.
+pub async fn get_cursor_auth(conn: &Connection) -> Result<Option<ProviderAuth>> {
+    get_provider_auth(conn, "cursor").await
 }
