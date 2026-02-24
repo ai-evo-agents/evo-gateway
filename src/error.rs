@@ -24,6 +24,9 @@ pub enum GatewayError {
     #[error("Rate limit exceeded for provider '{0}'")]
     RateLimitExceeded(String),
 
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -50,6 +53,11 @@ impl IntoResponse for GatewayError {
             Self::RateLimitExceeded(_) => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "RATE_LIMIT_EXCEEDED",
+                self.to_string(),
+            ),
+            Self::Unauthorized(_) => (
+                StatusCode::UNAUTHORIZED,
+                "UNAUTHORIZED",
                 self.to_string(),
             ),
             Self::Internal(_) => (

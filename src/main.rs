@@ -3,12 +3,20 @@ mod health;
 mod middleware;
 mod routes;
 mod state;
+mod stream;
 
 use anyhow::{Context, Result};
-use axum::{Router, middleware::from_fn, routing::get};
+use axum::{
+    Router,
+    middleware::{from_fn, from_fn_with_state},
+    routing::get,
+};
 use evo_common::{config::GatewayConfig, logging::init_logging};
+use evo_gateway::auth::AuthStore;
+use middleware::auth::{AuthState, auth_middleware};
 use state::AppState;
 use std::{net::SocketAddr, path::Path, sync::Arc};
+use tokio::sync::RwLock;
 use tracing::info;
 
 const DEFAULT_CONFIG_PATH: &str = "gateway.json";
@@ -31,10 +39,41 @@ async fn main() -> Result<()> {
 
     let state = Arc::new(AppState::new(config));
 
-    // Build router — state applied once at the top level
+    // Auth configuration
+    let auth_enabled = std::env::var("EVO_GATEWAY_AUTH")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    let auth_keys_path = std::env::var("EVO_GATEWAY_AUTH_KEYS")
+        .unwrap_or_else(|_| "auth.json".to_string());
+
+    let auth_store = if auth_enabled {
+        AuthStore::load(Path::new(&auth_keys_path))
+            .with_context(|| format!("Failed to load auth keys from {auth_keys_path}"))?
+    } else {
+        AuthStore::default()
+    };
+
+    if auth_enabled {
+        info!(
+            keys_file = %auth_keys_path,
+            keys_count = auth_store.keys.len(),
+            "authentication enabled"
+        );
+    }
+
+    let auth_state = AuthState {
+        enabled: auth_enabled,
+        store: Arc::new(RwLock::new(auth_store)),
+    };
+
+    // Build router — /health stays unauthenticated, API routes get auth middleware
     let app = Router::new()
         .route("/health", get(health::health_handler))
-        .merge(routes::router())
+        .merge(
+            routes::router()
+                .layer(from_fn_with_state(auth_state, auth_middleware)),
+        )
         .layer(from_fn(middleware::request_logging))
         .with_state(state);
 

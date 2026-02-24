@@ -1,5 +1,9 @@
-use crate::{error::GatewayError, state::AppState};
-use axum::{Json, extract::State};
+use crate::{
+    error::GatewayError,
+    state::AppState,
+    stream::{is_streaming, proxy_streaming},
+};
+use axum::{Json, extract::State, response::IntoResponse, response::Response};
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::instrument;
@@ -7,12 +11,13 @@ use tracing::instrument;
 /// POST /v1/messages — proxies directly to the Anthropic Messages API (native format).
 ///
 /// This endpoint accepts Anthropic's native request schema without translation.
+/// Supports streaming (`"stream": true`) — returns SSE events without buffering.
 /// Use `/v1/chat/completions` with `"anthropic:<model>"` for OpenAI-compatible access.
 #[instrument(skip(state, body))]
 pub async fn messages(
     State(state): State<Arc<AppState>>,
     Json(body): Json<Value>,
-) -> Result<Json<Value>, GatewayError> {
+) -> Result<Response, GatewayError> {
     let pool = state.get_pool("anthropic").await?;
 
     let token = pool.token_pool.next_token().ok_or_else(|| {
@@ -35,19 +40,23 @@ pub async fn messages(
         req = req.header(k.as_str(), v.as_str());
     }
 
-    let response = req.json(&body).send().await.map_err(GatewayError::from)?;
+    if is_streaming(&body) {
+        proxy_streaming(req.json(&body)).await
+    } else {
+        let response = req.json(&body).send().await.map_err(GatewayError::from)?;
 
-    let status = response.status();
-    let json: Value = response
-        .json()
-        .await
-        .map_err(|e| GatewayError::UpstreamError(e.to_string()))?;
+        let status = response.status();
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| GatewayError::UpstreamError(e.to_string()))?;
 
-    if !status.is_success() {
-        return Err(GatewayError::UpstreamError(format!(
-            "Anthropic returned {status}: {json}"
-        )));
+        if !status.is_success() {
+            return Err(GatewayError::UpstreamError(format!(
+                "Anthropic returned {status}: {json}"
+            )));
+        }
+
+        Ok(Json(json).into_response())
     }
-
-    Ok(Json(json))
 }
