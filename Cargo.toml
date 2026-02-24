@@ -3,9 +3,17 @@ name = "evo-gateway"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "evo_gateway"
+path = "src/lib.rs"
+
 [[bin]]
 name = "evo-gateway"
 path = "src/main.rs"
+
+[[bin]]
+name = "evo-gateway-cli"
+path = "src/bin/cli.rs"
 
 [dependencies]
 axum = "0.7"
@@ -24,3 +32,7 @@ tower-http = { version = "0.6", features = ["trace", "cors"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4"] }
 evo-common = "0.2"
+sha2 = "0.10"
+rand = "0.9"
+hex = "0.4"
+clap = { version = "4", features = ["derive"] }

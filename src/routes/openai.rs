@@ -9,8 +9,12 @@
 //!   "ollama:llama3.2"                          → local Ollama
 //!   "gpt-4o"                                   → auto-route (first enabled pool)
 
-use crate::{error::GatewayError, state::AppState};
-use axum::{Json, extract::State};
+use crate::{
+    error::GatewayError,
+    state::AppState,
+    stream::{is_streaming, proxy_streaming},
+};
+use axum::{Json, extract::State, response::IntoResponse, response::Response};
 use evo_common::config::ProviderType;
 use reqwest::RequestBuilder;
 use serde_json::{Value, json};
@@ -21,11 +25,12 @@ use tracing::instrument;
 
 /// POST /v1/chat/completions
 /// Dispatches based on `provider:model` syntax in the `model` field.
+/// Supports streaming (`"stream": true`) — returns SSE events without buffering.
 #[instrument(skip(state, body), fields(model))]
 pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(mut body): Json<Value>,
-) -> Result<Json<Value>, GatewayError> {
+) -> Result<Response, GatewayError> {
     let model_str = body["model"].as_str().unwrap_or("").to_string();
 
     let (provider_name, actual_model) = parse_provider_model(&model_str);
@@ -47,7 +52,12 @@ pub async fn chat_completions(
         ProviderType::OpenAiCompatible => {
             let url = format!("{}/chat/completions", pool.config.base_url);
             let req = build_openai_request(&state, &pool, &url, &body)?;
-            proxy_json(req).await
+
+            if is_streaming(&body) {
+                proxy_streaming(req).await
+            } else {
+                proxy_json(req).await.map(IntoResponse::into_response)
+            }
         }
         ProviderType::Anthropic => anthropic_chat(&state, &pool, body).await,
     }
@@ -125,11 +135,12 @@ fn build_openai_request(
 }
 
 /// Anthropic uses `x-api-key` + `anthropic-version` and a slightly different schema.
+/// Handles both streaming and non-streaming requests.
 async fn anthropic_chat(
     state: &AppState,
     pool: &crate::state::ProviderPool,
     body: Value,
-) -> Result<Json<Value>, GatewayError> {
+) -> Result<Response, GatewayError> {
     let token = pool.token_pool.next_token().ok_or_else(|| {
         GatewayError::ConfigError(format!(
             "no API token configured for provider '{}'",
@@ -150,7 +161,13 @@ async fn anthropic_chat(
         req = req.header(k.as_str(), v.as_str());
     }
 
-    proxy_json(req.json(&body)).await
+    if is_streaming(&body) {
+        proxy_streaming(req.json(&body)).await
+    } else {
+        proxy_json(req.json(&body))
+            .await
+            .map(IntoResponse::into_response)
+    }
 }
 
 /// Execute a prepared request and decode the JSON response.

@@ -1,6 +1,6 @@
 # evo-gateway
 
-Multi-provider LLM API aggregator. Proxies requests to OpenAI, Anthropic, OpenRouter, and local models (Ollama/vLLM) with a single consistent API surface.
+Multi-provider LLM API aggregator. Proxies requests to OpenAI, Anthropic, OpenRouter, and local models (Ollama/vLLM) with a single consistent API surface. Supports SSE streaming and optional API key authentication.
 
 ## Quick Commands
 
@@ -10,6 +10,9 @@ cargo run
 
 # Run with custom config
 GATEWAY_CONFIG=/path/to/gateway.json cargo run
+
+# Run with auth enabled
+EVO_GATEWAY_AUTH=true cargo run
 
 # Build release
 cargo build --release
@@ -22,6 +25,15 @@ cargo clippy -- -D warnings
 
 # Health check (once running)
 curl http://localhost:8080/health
+
+# Generate an auth key
+cargo run --bin evo-gateway-cli -- auth generate --name my-key
+
+# List auth keys
+cargo run --bin evo-gateway-cli -- auth list
+
+# Revoke an auth key
+cargo run --bin evo-gateway-cli -- auth revoke --name my-key
 ```
 
 ## Environment Variables
@@ -32,6 +44,8 @@ curl http://localhost:8080/health
 | `OPENAI_API_KEY` | — | OpenAI API key |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key |
 | `OPENROUTER_API_KEY` | — | OpenRouter API key |
+| `EVO_GATEWAY_AUTH` | `false` | Enable API key authentication (`true` or `1`) |
+| `EVO_GATEWAY_AUTH_KEYS` | `auth.json` | Path to auth keys JSON file |
 | `EVO_LOG_DIR` | `./logs` | Log output directory |
 | `RUST_LOG` | `info` | Log level filter |
 
@@ -61,10 +75,12 @@ Multiple `api_key_envs` entries enable token rotation (round-robin, lock-free wi
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | Health check — lists enabled providers |
-| `POST` | `/v1/chat/completions` | OpenAI-compatible chat (provider:model routing) |
-| `POST` | `/v1/messages` | Anthropic native Messages API |
-| `POST` | `/v1/local` | Local LLM proxy (Ollama / vLLM) |
+| `GET` | `/health` | Health check — no auth required |
+| `POST` | `/v1/chat/completions` | OpenAI-compatible chat (streaming supported) |
+| `POST` | `/v1/messages` | Anthropic native Messages API (streaming supported) |
+| `POST` | `/v1/embeddings` | Embeddings endpoint |
+| `POST` | `/api/generate` | Local LLM generate (Ollama-compatible) |
+| `POST` | `/api/chat` | Local LLM chat (Ollama-compatible) |
 
 ### Provider:Model Routing
 
@@ -76,24 +92,58 @@ The OpenAI-compatible endpoint supports `"model": "provider:model"` syntax:
 { "model": "openrouter:meta-llama/llama-3.3-70b-instruct", "messages": [...] }
 ```
 
-If no provider prefix is given, `openai` is used by default.
+If no provider prefix is given, the first enabled provider is used by default.
+
+## Authentication
+
+Auth is disabled by default (backward compatible). Enable with `EVO_GATEWAY_AUTH=true`.
+
+- Keys managed via `evo-gateway-cli auth generate|list|revoke`
+- Accepts `Authorization: Bearer <key>` or `x-api-key: <key>` headers
+- Keys are SHA-256 hashed before storage in `auth.json`
+- `/health` is always unauthenticated
+
+## Streaming
+
+Chat and messages endpoints support SSE streaming with `"stream": true`. Responses are piped directly from upstream without buffering. Non-streaming requests return buffered JSON as before.
+
+## AI Coding Tool Configuration
+
+**Codex CLI:**
+```bash
+export OPENAI_BASE_URL=http://localhost:8080/v1
+export OPENAI_API_KEY=evo-<generated-key>
+```
+
+**Cursor:** Settings > Models > OpenAI API Base URL: `http://localhost:8080/v1`, API Key: `evo-<key>`
+
+**Claude Code:**
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:8080
+export ANTHROPIC_API_KEY=evo-<generated-key>
+```
 
 ## Architecture
 
 ```
 src/
-├── main.rs          — startup, config load, Axum server
+├── lib.rs           — library root (exports auth module)
+├── main.rs          — startup, config load, Axum server, auth wiring
 ├── state.rs         — AppState, ProviderPool, TokenPool (lock-free round-robin)
-├── config.rs        — config parsing helpers
+├── stream.rs        — SSE streaming passthrough (proxy_streaming, is_streaming)
 ├── error.rs         — GatewayError → HTTP response mapping
 ├── health.rs        — GET /health handler
+├── auth.rs          — AuthStore (key generation, hashing, verification)
 ├── middleware/
-│   └── mod.rs       — request logging middleware (tracing)
-└── routes/
-    ├── mod.rs        — route registry
-    ├── openai.rs     — POST /v1/chat/completions
-    ├── anthropic.rs  — POST /v1/messages
-    └── local_llm.rs  — POST /v1/local
+│   ├── mod.rs       — request logging middleware (tracing)
+│   └── auth.rs      — authentication middleware (Bearer + x-api-key)
+├── routes/
+│   ├── mod.rs       — route registry
+│   ├── openai.rs    — POST /v1/chat/completions, /v1/embeddings, /v1/models
+│   ├── anthropic.rs — POST /v1/messages
+│   └── local_llm.rs — POST /api/generate, /api/chat
+└── bin/
+    └── cli.rs       — evo-gateway-cli (auth key management)
 ```
 
 ### Key Types (`state.rs`)

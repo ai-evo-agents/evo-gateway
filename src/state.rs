@@ -82,7 +82,7 @@ impl AppState {
     pub fn new(config: GatewayConfig) -> Self {
         let pools = build_pools(config.providers);
         let http_client = Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
+            .connect_timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("Failed to build HTTP client");
 

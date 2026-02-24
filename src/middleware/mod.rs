@@ -1,3 +1,5 @@
+pub mod auth;
+
 use axum::{extract::Request, http::HeaderValue, middleware::Next, response::Response};
 use tracing::{info, warn};
 use uuid::Uuid;
