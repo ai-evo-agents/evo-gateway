@@ -44,8 +44,8 @@ async fn main() -> Result<()> {
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
 
-    let auth_keys_path = std::env::var("EVO_GATEWAY_AUTH_KEYS")
-        .unwrap_or_else(|_| "auth.json".to_string());
+    let auth_keys_path =
+        std::env::var("EVO_GATEWAY_AUTH_KEYS").unwrap_or_else(|_| "auth.json".to_string());
 
     let auth_store = if auth_enabled {
         AuthStore::load(Path::new(&auth_keys_path))
@@ -70,10 +70,7 @@ async fn main() -> Result<()> {
     // Build router — /health stays unauthenticated, API routes get auth middleware
     let app = Router::new()
         .route("/health", get(health::health_handler))
-        .merge(
-            routes::router()
-                .layer(from_fn_with_state(auth_state, auth_middleware)),
-        )
+        .merge(routes::router().layer(from_fn_with_state(auth_state, auth_middleware)))
         .layer(from_fn(middleware::request_logging))
         .with_state(state);
 
