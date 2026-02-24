@@ -38,6 +38,14 @@
       "enabled": false,
       "provider_type": "open_ai_compatible",
       "extra_headers": {}
+    },
+    {
+      "name": "cursor",
+      "base_url": "",
+      "api_key_envs": [],
+      "enabled": false,
+      "provider_type": "cursor",
+      "extra_headers": {}
     }
   ]
 }
