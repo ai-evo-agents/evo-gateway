@@ -34,6 +34,7 @@ pub async fn health_handler(
         let health = match pool.provider_type() {
             ProviderType::Cursor => check_cursor_provider(pool.name()).await,
             ProviderType::ClaudeCode => check_claude_code_provider(pool.name()).await,
+            ProviderType::CodexCli => check_codex_cli_provider(pool.name()).await,
             _ => {
                 check_provider(
                     client,
@@ -79,6 +80,18 @@ async fn check_cursor_provider(name: &str) -> ProviderHealth {
 async fn check_claude_code_provider(name: &str) -> ProviderHealth {
     let start = std::time::Instant::now();
     let (reachable, _version) = crate::claude_code::check_claude_code_status().await;
+    ProviderHealth {
+        name: name.to_string(),
+        tokens: 0,
+        reachable,
+        latency_ms: Some(start.elapsed().as_millis() as u64),
+    }
+}
+
+/// Health check for the Codex CLI provider — runs `codex --version`.
+async fn check_codex_cli_provider(name: &str) -> ProviderHealth {
+    let start = std::time::Instant::now();
+    let (reachable, _version) = crate::codex_cli::check_codex_cli_status().await;
     ProviderHealth {
         name: name.to_string(),
         tokens: 0,

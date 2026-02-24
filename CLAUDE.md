@@ -49,6 +49,9 @@ cargo run --bin evo-gateway-cli -- auth revoke --name my-key
 | `CLAUDE_CODE_BINARY` | `claude` | Path to the Claude Code CLI binary |
 | `CLAUDE_CODE_MAX_CONCURRENT` | `4` | Max concurrent claude processes |
 | `CLAUDE_CODE_TIMEOUT_SECS` | `300` | Per-request timeout for claude (seconds) |
+| `CODEX_CLI_BINARY` | `codex` | Path to the Codex CLI binary |
+| `CODEX_CLI_MAX_CONCURRENT` | `4` | Max concurrent codex processes |
+| `CODEX_CLI_TIMEOUT_SECS` | `300` | Per-request timeout for codex (seconds) |
 | `EVO_LOG_DIR` | `./logs` | Log output directory |
 | `RUST_LOG` | `info` | Log level filter |
 
@@ -140,6 +143,7 @@ src/
 ├── cli_common.rs    — shared helpers for CLI-subprocess providers
 ├── cursor.rs        — Cursor provider (cursor-agent CLI)
 ├── claude_code.rs   — Claude Code provider (claude CLI)
+├── codex_cli.rs     — Codex CLI provider (codex CLI)
 ├── middleware/
 │   ├── mod.rs       — request logging middleware (tracing)
 │   └── auth.rs      — authentication middleware (Bearer + x-api-key)

@@ -1,5 +1,6 @@
 mod claude_code;
 mod cli_common;
+mod codex_cli;
 mod cursor;
 mod db;
 mod error;
@@ -82,6 +83,9 @@ async fn main() -> Result<()> {
 
     // Check claude code availability on startup
     check_claude_code_availability().await;
+
+    // Check codex CLI availability on startup
+    check_codex_cli_availability().await;
 
     // Auth configuration
     let auth_enabled = std::env::var("EVO_GATEWAY_AUTH")
@@ -233,6 +237,19 @@ async fn check_claude_code_availability() {
     }
 }
 
+/// Check and log Codex CLI availability on server startup.
+async fn check_codex_cli_availability() {
+    let (available, version) = crate::codex_cli::check_codex_cli_status().await;
+    if available {
+        info!(
+            version = ?version,
+            "codex CLI available"
+        );
+    } else {
+        info!("codex CLI not found — codex-cli provider will not work until `codex` is installed");
+    }
+}
+
 fn load_config(path: &str) -> Result<GatewayConfig> {
     if !Path::new(path).exists() {
         // Write a default config if none exists
@@ -320,6 +337,15 @@ fn default_config() -> GatewayConfig {
                 api_key_envs: vec![],
                 enabled: false,
                 provider_type: ProviderType::ClaudeCode,
+                extra_headers: HashMap::new(),
+                rate_limit: None,
+            },
+            ProviderConfig {
+                name: "codex-cli".to_string(),
+                base_url: String::new(),
+                api_key_envs: vec![],
+                enabled: false,
+                provider_type: ProviderType::CodexCli,
                 extra_headers: HashMap::new(),
                 rate_limit: None,
             },

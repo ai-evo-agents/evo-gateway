@@ -54,6 +54,14 @@
       "enabled": false,
       "provider_type": "claude_code",
       "extra_headers": {}
+    },
+    {
+      "name": "codex-cli",
+      "base_url": "",
+      "api_key_envs": [],
+      "enabled": false,
+      "provider_type": "codex_cli",
+      "extra_headers": {}
     }
   ]
 }

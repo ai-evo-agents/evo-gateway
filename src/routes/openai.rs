@@ -76,6 +76,14 @@ pub async fn chat_completions(
                 Ok(Json(json).into_response())
             }
         }
+        ProviderType::CodexCli => {
+            if is_streaming(&body) {
+                crate::codex_cli::codex_cli_chat_streaming(&body, actual_model).await
+            } else {
+                let json = crate::codex_cli::codex_cli_chat(&body, actual_model).await?;
+                Ok(Json(json).into_response())
+            }
+        }
     }
 }
 
