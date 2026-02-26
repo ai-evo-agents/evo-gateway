@@ -40,17 +40,26 @@ fn codex_binary() -> String {
 
 /// Extract assistant text from a Codex `item.completed` event.
 ///
-/// The item's `content` is an array of blocks; we join all `text` entries.
+/// Handles both old format (`assistant_message` with `content[].text` blocks)
+/// and new format (`agent_message` with top-level `text` field).
 fn extract_assistant_text(item: &Value) -> Option<String> {
-    let content = item["content"].as_array()?;
-    let texts: Vec<&str> = content
-        .iter()
-        .filter_map(|block| block["text"].as_str())
-        .collect();
-    if texts.is_empty() {
-        return None;
+    // New format: agent_message has top-level "text" field
+    if let Some(text) = item["text"].as_str()
+        && !text.is_empty()
+    {
+        return Some(text.to_string());
     }
-    Some(texts.join(""))
+    // Old format: assistant_message has content[] array of text blocks
+    if let Some(content) = item["content"].as_array() {
+        let texts: Vec<&str> = content
+            .iter()
+            .filter_map(|block| block["text"].as_str())
+            .collect();
+        if !texts.is_empty() {
+            return Some(texts.join(""));
+        }
+    }
+    None
 }
 
 /// Parse full Codex NDJSON output, returning `(assistant_text, input_tokens, output_tokens)`.
@@ -70,10 +79,13 @@ fn parse_codex_output(stdout: &str) -> Result<(String, u64, u64), GatewayError> 
 
         let event_type = json["type"].as_str().unwrap_or("");
 
-        // item.completed with assistant_message → extract text
+        // item.completed with assistant_message or agent_message → extract text
         if event_type == "item.completed"
             && let Some(item) = json.get("item")
-            && item["type"].as_str() == Some("assistant_message")
+            && matches!(
+                item["type"].as_str(),
+                Some("assistant_message") | Some("agent_message")
+            )
         {
             assistant_text = extract_assistant_text(item);
         }
@@ -85,10 +97,20 @@ fn parse_codex_output(stdout: &str) -> Result<(String, u64, u64), GatewayError> 
             input_tokens = usage["input_tokens"].as_u64().unwrap_or(0);
             output_tokens = usage["output_tokens"].as_u64().unwrap_or(0);
         }
+
+        // turn.failed → extract error message
+        if event_type == "turn.failed" {
+            let error_msg = json["error"]["message"]
+                .as_str()
+                .unwrap_or("codex turn failed (unknown reason)");
+            return Err(GatewayError::UpstreamError(format!(
+                "codex turn.failed: {error_msg}"
+            )));
+        }
     }
 
     let text = assistant_text.ok_or_else(|| {
-        GatewayError::UpstreamError("no assistant_message found in codex output".into())
+        GatewayError::UpstreamError("no assistant/agent message found in codex output".into())
     })?;
 
     Ok((text, input_tokens, output_tokens))
@@ -108,15 +130,14 @@ pub async fn codex_cli_chat(body: &Value, model: &str) -> Result<Value, GatewayE
     })?;
 
     let mut cmd = tokio::process::Command::new(&binary);
-    cmd.args([
-        "exec",
-        "--json",
-        "--ephemeral",
-        "--full-auto",
-        "-m",
-        model,
-        &prompt,
-    ]);
+    let mut args = vec!["exec", "--json", "--ephemeral", "--full-auto"];
+    // Only pass -m flag if model is specified and not "default"
+    if !model.is_empty() && model != "default" {
+        args.push("-m");
+        args.push(model);
+    }
+    args.push(&prompt);
+    cmd.args(&args);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
@@ -171,15 +192,14 @@ pub async fn codex_cli_chat_streaming(body: &Value, model: &str) -> Result<Respo
     })?;
 
     let mut cmd = tokio::process::Command::new(&binary);
-    cmd.args([
-        "exec",
-        "--json",
-        "--ephemeral",
-        "--full-auto",
-        "-m",
-        model,
-        &prompt,
-    ]);
+    let mut args = vec!["exec", "--json", "--ephemeral", "--full-auto"];
+    // Only pass -m flag if model is specified and not "default"
+    if !model.is_empty() && model != "default" {
+        args.push("-m");
+        args.push(model);
+    }
+    args.push(&prompt);
+    cmd.args(&args);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
@@ -225,10 +245,10 @@ pub async fn codex_cli_chat_streaming(body: &Value, model: &str) -> Result<Respo
 
                     let event_type = json["type"].as_str().unwrap_or("");
 
-                    // item.updated with assistant_message → accumulated text delta
+                    // item.updated with assistant/agent message → accumulated text delta
                     if event_type == "item.updated"
                         && let Some(item) = json.get("item")
-                        && item["type"].as_str() == Some("assistant_message")
+                        && matches!(item["type"].as_str(), Some("assistant_message") | Some("agent_message"))
                         && let Some(full_text) = extract_assistant_text(item)
                         && full_text.len() > accumulated.len()
                     {
@@ -239,10 +259,10 @@ pub async fn codex_cli_chat_streaming(body: &Value, model: &str) -> Result<Respo
                         continue;
                     }
 
-                    // item.completed with assistant_message → final delta
+                    // item.completed with assistant/agent message → final delta
                     if event_type == "item.completed"
                         && let Some(item) = json.get("item")
-                        && item["type"].as_str() == Some("assistant_message")
+                        && matches!(item["type"].as_str(), Some("assistant_message") | Some("agent_message"))
                         && let Some(full_text) = extract_assistant_text(item)
                         && full_text.len() > accumulated.len()
                     {
@@ -250,6 +270,19 @@ pub async fn codex_cli_chat_streaming(body: &Value, model: &str) -> Result<Respo
                         let chunk = build_sse_chunk(delta, &model, &id, false);
                         yield Ok::<_, std::io::Error>(chunk);
                         continue;
+                    }
+
+                    // turn.failed → send error as content and finish
+                    if event_type == "turn.failed" {
+                        let error_msg = json["error"]["message"]
+                            .as_str()
+                            .unwrap_or("codex turn failed");
+                        let chunk = build_sse_chunk(&format!("[Error: {error_msg}]"), &model, &id, false);
+                        yield Ok::<_, std::io::Error>(chunk);
+                        let done_chunk = build_sse_chunk("", &model, &id, true);
+                        yield Ok(done_chunk);
+                        yield Ok("data: [DONE]\n\n".to_string());
+                        break;
                     }
 
                     // turn.completed → finish
@@ -378,7 +411,18 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_codex_output() {
+    fn test_extract_assistant_text_agent_message() {
+        let item = json!({
+            "id": "item_1",
+            "type": "agent_message",
+            "text": "Four"
+        });
+        let text = extract_assistant_text(&item).unwrap();
+        assert_eq!(text, "Four");
+    }
+
+    #[test]
+    fn test_parse_codex_output_assistant_message() {
         let stdout = r#"{"type":"item.completed","item":{"type":"assistant_message","content":[{"type":"text","text":"Hello!"}]}}
 {"type":"turn.completed","usage":{"input_tokens":42,"output_tokens":7}}"#;
         let (text, input, output) = parse_codex_output(stdout).unwrap();
@@ -388,9 +432,27 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_codex_output_agent_message() {
+        let stdout = r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Four"}}
+{"type":"turn.completed","usage":{"input_tokens":14879,"cached_input_tokens":3456,"output_tokens":38}}"#;
+        let (text, input, output) = parse_codex_output(stdout).unwrap();
+        assert_eq!(text, "Four");
+        assert_eq!(input, 14879);
+        assert_eq!(output, 38);
+    }
+
+    #[test]
     fn test_parse_codex_output_no_message() {
         let stdout = r#"{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":0}}"#;
         let result = parse_codex_output(stdout);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_codex_output_turn_failed() {
+        let stdout = r#"{"type":"turn.failed","error":{"message":"model not supported"}}"#;
+        let result = parse_codex_output(stdout);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("turn.failed"));
     }
 }

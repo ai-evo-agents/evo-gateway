@@ -28,7 +28,11 @@ use tracing::info;
 const DEFAULT_CONFIG_PATH: &str = "gateway.json";
 
 #[derive(Parser)]
-#[command(name = "evo-gateway")]
+#[command(
+    name = "evo-gateway",
+    version,
+    about = "Unified LLM API gateway for the evo system"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -219,9 +223,7 @@ async fn run_claude_auth() -> Result<()> {
         .stderr(Stdio::inherit())
         .status()
         .await
-        .with_context(|| {
-            format!("Failed to run '{binary}'. Is Claude Code CLI installed?")
-        })?;
+        .with_context(|| format!("Failed to run '{binary}'. Is Claude Code CLI installed?"))?;
 
     if !status.success() {
         anyhow::bail!("{binary} exited with code: {status}");
@@ -270,9 +272,7 @@ async fn run_codex_auth() -> Result<()> {
         .stderr(Stdio::inherit())
         .status()
         .await
-        .with_context(|| {
-            format!("Failed to run '{binary}'. Is Codex CLI installed?")
-        })?;
+        .with_context(|| format!("Failed to run '{binary}'. Is Codex CLI installed?"))?;
 
     if !status.success() {
         anyhow::bail!("{binary} exited with code: {status}");
