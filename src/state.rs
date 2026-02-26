@@ -7,6 +7,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::{Duration, Instant},
 };
 use tokio::sync::RwLock;
 
@@ -76,6 +77,10 @@ pub struct AppState {
     /// Provider pools keyed by provider name, protected for hot-reload.
     pub pools: Arc<RwLock<HashMap<String, Arc<ProviderPool>>>>,
     pub http_client: Arc<Client>,
+    /// Cache of dynamically discovered CLI provider models.
+    /// Key: provider name, Value: (discovered_at, model_ids).
+    #[allow(clippy::type_complexity)]
+    pub cli_models_cache: Arc<RwLock<HashMap<String, (Instant, Vec<String>)>>>,
 }
 
 impl AppState {
@@ -89,6 +94,7 @@ impl AppState {
         Self {
             pools: Arc::new(RwLock::new(pools)),
             http_client: Arc::new(http_client),
+            cli_models_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -144,6 +150,24 @@ impl AppState {
         let new_pools = build_pools(config.providers);
         let mut pools = self.pools.write().await;
         *pools = new_pools;
+    }
+
+    /// Get cached CLI models if still within TTL.
+    pub async fn get_cached_models(&self, provider: &str, ttl: Duration) -> Option<Vec<String>> {
+        let cache = self.cli_models_cache.read().await;
+        cache.get(provider).and_then(|(discovered_at, models)| {
+            if discovered_at.elapsed() < ttl && !models.is_empty() {
+                Some(models.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Store discovered CLI models in cache.
+    pub async fn set_cached_models(&self, provider: &str, models: Vec<String>) {
+        let mut cache = self.cli_models_cache.write().await;
+        cache.insert(provider.to_string(), (Instant::now(), models));
     }
 }
 

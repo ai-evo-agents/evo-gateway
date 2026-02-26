@@ -99,6 +99,14 @@ async fn main() -> Result<()> {
     check_codex_cli_availability().await;
     check_provider_auth_status("codex-cli").await;
 
+    // Background PTY model discovery for CLI providers
+    {
+        let state_clone = Arc::clone(&state);
+        tokio::spawn(async move {
+            discover_cli_models_background(state_clone).await;
+        });
+    }
+
     // Auth configuration
     let auth_enabled = std::env::var("EVO_GATEWAY_AUTH")
         .map(|v| v == "true" || v == "1")
@@ -396,6 +404,40 @@ async fn check_provider_auth_status(provider: &str) {
     }
 }
 
+/// Background task: discover models for CLI providers via PTY.
+///
+/// Runs after startup to populate the models cache without blocking the server.
+/// Only discovers models for providers that have empty `models` config.
+async fn discover_cli_models_background(state: Arc<AppState>) {
+    use evo_common::config::ProviderType;
+
+    let pools = state.all_enabled_pools().await;
+
+    for pool in &pools {
+        if *pool.provider_type() == ProviderType::CodexCli && pool.config.models.is_empty() {
+            info!(provider = %pool.name(), "starting PTY model discovery for codex-cli");
+            match crate::codex_cli::discover_codex_models().await {
+                Ok(models) => {
+                    info!(
+                        provider = %pool.name(),
+                        count = models.len(),
+                        models = ?models,
+                        "discovered codex-cli models via PTY"
+                    );
+                    state.set_cached_models(pool.name(), models).await;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %pool.name(),
+                        error = %e,
+                        "PTY model discovery failed — using config-defined models as fallback"
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn load_config(path: &str) -> Result<GatewayConfig> {
     if !Path::new(path).exists() {
         // Write a default config if none exists
@@ -434,6 +476,16 @@ fn default_config() -> GatewayConfig {
                 provider_type: ProviderType::OpenAiCompatible,
                 extra_headers: HashMap::new(),
                 rate_limit: None,
+                models: vec![
+                    "gpt-4o".into(),
+                    "gpt-4o-mini".into(),
+                    "gpt-4.1".into(),
+                    "gpt-4.1-mini".into(),
+                    "gpt-4.1-nano".into(),
+                    "o3".into(),
+                    "o3-mini".into(),
+                    "o4-mini".into(),
+                ],
             },
             ProviderConfig {
                 name: "anthropic".to_string(),
@@ -443,6 +495,11 @@ fn default_config() -> GatewayConfig {
                 provider_type: ProviderType::Anthropic,
                 extra_headers: HashMap::new(),
                 rate_limit: None,
+                models: vec![
+                    "claude-opus-4-5".into(),
+                    "claude-sonnet-4-5".into(),
+                    "claude-haiku-3-5".into(),
+                ],
             },
             ProviderConfig {
                 name: "openrouter".to_string(),
@@ -458,6 +515,7 @@ fn default_config() -> GatewayConfig {
                     ("X-Title".to_string(), "evo-gateway".to_string()),
                 ]),
                 rate_limit: None,
+                models: vec![],
             },
             ProviderConfig {
                 name: "ollama".to_string(),
@@ -467,6 +525,7 @@ fn default_config() -> GatewayConfig {
                 provider_type: ProviderType::OpenAiCompatible,
                 extra_headers: HashMap::new(),
                 rate_limit: None,
+                models: vec![],
             },
             ProviderConfig {
                 name: "cursor".to_string(),
@@ -476,6 +535,12 @@ fn default_config() -> GatewayConfig {
                 provider_type: ProviderType::Cursor,
                 extra_headers: HashMap::new(),
                 rate_limit: None,
+                models: vec![
+                    "auto".into(),
+                    "gpt-4o".into(),
+                    "claude-sonnet-4-5".into(),
+                    "claude-opus-4-5".into(),
+                ],
             },
             ProviderConfig {
                 name: "claude-code".to_string(),
@@ -485,6 +550,11 @@ fn default_config() -> GatewayConfig {
                 provider_type: ProviderType::ClaudeCode,
                 extra_headers: HashMap::new(),
                 rate_limit: None,
+                models: vec![
+                    "claude-sonnet-4-5".into(),
+                    "claude-opus-4-5".into(),
+                    "claude-haiku-3-5".into(),
+                ],
             },
             ProviderConfig {
                 name: "codex-cli".to_string(),
@@ -494,6 +564,14 @@ fn default_config() -> GatewayConfig {
                 provider_type: ProviderType::CodexCli,
                 extra_headers: HashMap::new(),
                 rate_limit: None,
+                models: vec![
+                    "gpt-5.3-codex".into(),
+                    "gpt-5.2-codex".into(),
+                    "gpt-5.1-codex-max".into(),
+                    "gpt-5.2".into(),
+                    "gpt-5.1-codex-mini".into(),
+                    "default".into(),
+                ],
             },
         ],
     }

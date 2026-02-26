@@ -111,19 +111,118 @@ pub async fn embeddings(
     proxy_json(req).await
 }
 
-/// GET /v1/models — list all enabled providers as model entries
+/// GET /v1/models — list all available models across enabled providers.
+///
+/// Returns models declared in each provider's `models` config field.
+/// For OpenAI-compatible providers with empty `models`, attempts to fetch
+/// from upstream `{base_url}/models`. Model IDs use `provider:model` format.
 #[instrument(skip(state))]
 pub async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<Value>, GatewayError> {
     let pools = state.all_enabled_pools().await;
+    let mut all_models: Vec<Value> = Vec::new();
 
-    let models: Vec<Value> = pools
-        .iter()
-        .map(|p| {
-            json!({
-                "id": p.name(),
+    for pool in &pools {
+        let provider_name = pool.name();
+        let provider_type = pool.provider_type();
+        let mut model_ids: Vec<String> = pool.config.models.clone();
+
+        // For OpenAI-compatible providers with no declared models,
+        // try fetching from upstream
+        if model_ids.is_empty()
+            && *provider_type == ProviderType::OpenAiCompatible
+            && let Ok(fetched) = fetch_upstream_models(&state, pool).await
+        {
+            model_ids = fetched;
+        }
+
+        // For CLI providers, check PTY discovery cache
+        if model_ids.is_empty()
+            && *provider_type == ProviderType::CodexCli
+            && let Some(cached) = state
+                .get_cached_models(provider_name, std::time::Duration::from_secs(3600))
+                .await
+        {
+            model_ids = cached;
+        }
+
+        // If still empty, add a "default" fallback
+        if model_ids.is_empty() {
+            model_ids.push("default".to_string());
+        }
+
+        let type_str = match provider_type {
+            ProviderType::OpenAiCompatible => "open_ai_compatible",
+            ProviderType::Anthropic => "anthropic",
+            ProviderType::Cursor => "cursor",
+            ProviderType::ClaudeCode => "claude_code",
+            ProviderType::CodexCli => "codex_cli",
+        };
+
+        for model_id in &model_ids {
+            all_models.push(json!({
+                "id": format!("{provider_name}:{model_id}"),
                 "object": "model",
-                "owned_by": "evo-gateway",
-                "tokens_available": p.token_pool.len(),
+                "owned_by": provider_name,
+                "provider": provider_name,
+                "provider_type": type_str,
+            }));
+        }
+    }
+
+    Ok(Json(json!({
+        "object": "list",
+        "data": all_models,
+    })))
+}
+
+/// GET /v1/models/:provider — list models for a specific provider.
+#[instrument(skip(state))]
+pub async fn list_provider_models(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(provider): axum::extract::Path<String>,
+) -> Result<Json<Value>, GatewayError> {
+    let pool = state.get_pool(&provider).await?;
+    let provider_type = pool.provider_type();
+    let mut model_ids: Vec<String> = pool.config.models.clone();
+
+    if model_ids.is_empty()
+        && *provider_type == ProviderType::OpenAiCompatible
+        && let Ok(fetched) = fetch_upstream_models(&state, &pool).await
+    {
+        model_ids = fetched;
+    }
+
+    // For CLI providers, check PTY discovery cache
+    if model_ids.is_empty()
+        && *provider_type == ProviderType::CodexCli
+        && let Some(cached) = state
+            .get_cached_models(&provider, std::time::Duration::from_secs(3600))
+            .await
+    {
+        model_ids = cached;
+    }
+
+    if model_ids.is_empty() {
+        model_ids.push("default".to_string());
+    }
+
+    let type_str = match provider_type {
+        ProviderType::OpenAiCompatible => "open_ai_compatible",
+        ProviderType::Anthropic => "anthropic",
+        ProviderType::Cursor => "cursor",
+        ProviderType::ClaudeCode => "claude_code",
+        ProviderType::CodexCli => "codex_cli",
+    };
+
+    let models: Vec<Value> = model_ids
+        .iter()
+        .map(|model_id| {
+            json!({
+                "id": format!("{provider}:{model_id}"),
+                "object": "model",
+                "owned_by": &provider,
+                "provider": &provider,
+                "provider_type": type_str,
             })
         })
         .collect();
@@ -132,6 +231,42 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<Valu
         "object": "list",
         "data": models,
     })))
+}
+
+/// Attempt to fetch model list from an OpenAI-compatible provider's /models endpoint.
+async fn fetch_upstream_models(
+    state: &AppState,
+    pool: &crate::state::ProviderPool,
+) -> Result<Vec<String>, GatewayError> {
+    let url = format!("{}/models", pool.config.base_url.trim_end_matches('/'));
+    let mut req = state.http_client.get(&url);
+    if let Some(token) = pool.token_pool.next_token() {
+        req = req.bearer_auth(token);
+    }
+    for (k, v) in &pool.config.extra_headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+
+    let resp = tokio::time::timeout(std::time::Duration::from_secs(5), req.send())
+        .await
+        .map_err(|_| GatewayError::UpstreamError("upstream models fetch timed out".into()))?
+        .map_err(|e| GatewayError::UpstreamError(e.to_string()))?;
+
+    let json: Value = resp
+        .json()
+        .await
+        .map_err(|e| GatewayError::UpstreamError(e.to_string()))?;
+
+    let models = json["data"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m["id"].as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(models)
 }
 
 // ─── Provider-specific proxy logic ───────────────────────────────────────────

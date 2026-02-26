@@ -33,11 +33,12 @@ Client Request
       |                                         |
       +---> POST /v1/embeddings           -->   +---> Anthropic proxy
       |                                         |
-      +---> POST /api/generate            -->   +---> Cursor proxy (via cursor-agent CLI)
-      +---> POST /api/chat                -->   |
-                                                +---> Claude Code proxy (via claude CLI)
-                                                |
-                                                +---> Codex CLI proxy (via codex CLI)
+      +---> GET  /v1/models               -->   +---> Cursor proxy (via cursor-agent CLI)
+      +---> GET  /v1/models/:provider     -->   |
+      |                                         +---> Claude Code proxy (via claude CLI)
+      +---> POST /api/generate            -->   |
+      +---> POST /api/chat                -->   +---> Codex CLI proxy (via codex CLI)
+                                                |     + PTY model discovery (portable-pty)
                                                 |
                                                 +---> Local LLM proxy (Ollama / vLLM)
                                           (routing by config / model prefix)
@@ -258,6 +259,8 @@ Multiple `api_key_envs` entries enable token rotation (round-robin, lock-free wi
 | `POST` | `/v1/chat/completions` | OpenAI-compatible chat completions (streaming supported) |
 | `POST` | `/v1/messages` | Anthropic native Messages API (streaming supported) |
 | `POST` | `/v1/embeddings` | Embeddings endpoint |
+| `GET` | `/v1/models` | List all available models across enabled providers (`provider:model` format) |
+| `GET` | `/v1/models/:provider` | List models for a specific provider |
 | `POST` | `/api/generate` | Local LLM generate (Ollama-compatible) |
 | `POST` | `/api/chat` | Local LLM chat (Ollama-compatible) |
 
@@ -276,6 +279,29 @@ The OpenAI-compatible endpoint supports `"model": "provider:model"` syntax:
 
 If no provider prefix is given, the first enabled provider is used by default.
 
+### Model Discovery
+
+The `/v1/models` endpoint aggregates models from all enabled providers:
+
+- **OpenAI-compatible providers** — fetches from upstream `{base_url}/models` if no models are declared in config
+- **CLI providers (Codex CLI)** — discovers models dynamically via PTY-based introspection (see below)
+- **Other providers** — returns a `"default"` model entry if no models are configured
+
+Model IDs are returned in `provider:model` format (e.g., `"openai:gpt-4o"`, `"codex-cli:gpt-5.3-codex"`), matching the routing syntax used in chat requests.
+
+### Dynamic CLI Model Discovery (Codex CLI)
+
+For the Codex CLI provider, the gateway discovers available models at startup by spawning `codex --dangerously-bypass-approvals-and-sandbox` in a pseudo-terminal (PTY), sending the `/model` slash command keystroke-by-keystroke, and parsing the TUI menu output. This approach is necessary because the Codex CLI does not expose a programmatic model listing API.
+
+The discovery process:
+1. Opens a PTY with `portable-pty` and spawns the Codex CLI in interactive mode
+2. Waits for initialization (prompt indicator + MCP servers finishing)
+3. Sends `/model` character-by-character (the TUI uses raw-mode keystroke processing)
+4. Captures and parses the model selection menu (strips ANSI escape codes, extracts model names via regex)
+5. Cleans up: dismisses the menu with Escape and kills the process
+
+Discovered models are cached in `AppState` with a **1-hour TTL**. The `/v1/models` and `/v1/models/codex-cli` endpoints serve from this cache. Discovery runs in a background task after server startup so it does not block request handling.
+
 ---
 
 ## Source File Layout
@@ -283,10 +309,11 @@ If no provider prefix is given, the first enabled provider is used by default.
 ```
 evo-gateway/
   Cargo.toml
+  test-gateway.sh         # Comprehensive curl-based test suite (health, models, all providers)
   src/
     lib.rs                # Library root — exports auth module
     main.rs               # Axum server entry point; loads config, wires auth + routes
-    state.rs              # AppState, ProviderPool, TokenPool (lock-free round-robin)
+    state.rs              # AppState, ProviderPool, TokenPool, CLI models cache
     stream.rs             # SSE streaming passthrough (proxy_streaming, is_streaming)
     error.rs              # GatewayError → HTTP response mapping
     health.rs             # GET /health handler
@@ -294,11 +321,11 @@ evo-gateway/
     cli_common.rs         # Shared helpers for CLI-subprocess providers (prompt, response, SSE)
     cursor.rs             # Cursor provider — cursor-agent CLI integration (chat + streaming)
     claude_code.rs        # Claude Code provider — claude CLI integration (chat + streaming)
-    codex_cli.rs          # Codex CLI provider — codex CLI integration (chat + streaming)
+    codex_cli.rs          # Codex CLI provider — codex CLI integration (chat + streaming + PTY model discovery)
     db.rs                 # Local libSQL database for credential storage (cursor auth)
     routes/
       mod.rs              # Route registry
-      openai.rs           # POST /v1/chat/completions, /v1/embeddings, /v1/models
+      openai.rs           # POST /v1/chat/completions, /v1/embeddings, GET /v1/models, GET /v1/models/:provider
       anthropic.rs        # POST /v1/messages
       local_llm.rs        # POST /api/generate, /api/chat
     middleware/
@@ -328,8 +355,13 @@ cargo run --bin evo-gateway-cli -- auth generate --name my-key
 # Run with debug logging
 RUST_LOG=debug cargo run
 
-# Run tests
+# Run unit tests
 cargo test
+
+# Run integration tests against a running gateway (requires curl + jq)
+./test-gateway.sh                              # default: http://localhost:8080
+./test-gateway.sh http://host:port             # custom target
+AUTH_KEY=evo-xxx ./test-gateway.sh             # with authentication
 
 # Lint
 cargo clippy -- -D warnings

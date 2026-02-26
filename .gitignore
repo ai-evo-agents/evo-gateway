@@ -9,3 +9,4 @@ gateway-backup-*.config
 gateway.config
 gateway.json
 auth.json
+backups/
