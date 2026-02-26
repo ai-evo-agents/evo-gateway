@@ -16,6 +16,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # evo-common is a sibling path dep (../evo-common).
+      # GitHub Actions only allows checkouts inside the workspace, so we
+      # check it out to ./evo-common and patch Cargo.toml accordingly.
+      - name: Checkout evo-common
+        uses: actions/checkout@v4
+        with:
+          repository: ai-evo-agents/evo-common
+          path: evo-common
+
+      - name: Patch path dependency for CI
+        shell: bash
+        run: |
+          sed -i.bak 's|{ path = "\.\./evo-common" }|{ path = "./evo-common" }|' Cargo.toml
+          rm -f Cargo.toml.bak
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
