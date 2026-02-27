@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Standalone launchd plist for evo-gateway.
+  This is a reference template. The `evo-gateway service install` command
+  generates a plist automatically with correct paths.
+
+  Manual install:
+    cp service/com.evo.gateway.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.evo.gateway.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.evo.gateway.plist
+    rm ~/Library/LaunchAgents/com.evo.gateway.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.evo.gateway</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/evo-gateway</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>WorkingDirectory</key>
+    <string>/Users/lifefarmer/.evo-gateway</string>
+    <key>StandardOutPath</key>
+    <string>/Users/lifefarmer/.evo-gateway/logs/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/lifefarmer/.evo-gateway/logs/stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>GATEWAY_CONFIG</key>
+        <string>/Users/lifefarmer/.evo-gateway/gateway.json</string>
+        <key>EVO_LOG_DIR</key>
+        <string>/Users/lifefarmer/.evo-gateway/logs</string>
+        <key>EVO_GATEWAY_DB_PATH</key>
+        <string>/Users/lifefarmer/.evo-gateway/gateway.db</string>
+        <key>RUST_LOG</key>
+        <string>info</string>
+    </dict>
+</dict>
+</plist>

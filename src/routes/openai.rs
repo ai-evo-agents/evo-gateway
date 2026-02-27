@@ -11,6 +11,7 @@
 
 use crate::{
     error::GatewayError,
+    reliability,
     state::AppState,
     stream::{is_streaming, proxy_streaming},
 };
@@ -25,7 +26,9 @@ use tracing::instrument;
 
 /// POST /v1/chat/completions
 /// Dispatches based on `provider:model` syntax in the `model` field.
+/// Supports `hint:<name>` prefix for routing via the `routing` config.
 /// Supports streaming (`"stream": true`) — returns SSE events without buffering.
+/// When reliability config is set, uses retry/fallback for non-streaming API requests.
 #[instrument(skip(state, body), fields(model))]
 pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
@@ -33,10 +36,10 @@ pub async fn chat_completions(
 ) -> Result<Response, GatewayError> {
     let model_str = body["model"].as_str().unwrap_or("").to_string();
 
-    let (provider_name, actual_model) = parse_provider_model(&model_str);
-    tracing::Span::current().record("model", actual_model);
+    let (provider_name, actual_model) = resolve_model(&model_str, &state);
+    tracing::Span::current().record("model", actual_model.as_str());
 
-    let pool = match provider_name {
+    let pool = match provider_name.as_deref() {
         Some(name) => state.get_pool(name).await?,
         None => {
             state
@@ -50,6 +53,25 @@ pub async fn chat_completions(
 
     match pool.provider_type() {
         ProviderType::OpenAiCompatible => {
+            // For non-streaming + reliability config, use the retry/fallback engine
+            if !is_streaming(&body)
+                && let Some(ref reliability_config) = state.reliability
+            {
+                let body_clone = body.clone();
+                let response =
+                    reliability::reliable_proxy(&state, pool.name(), reliability_config, |p, s| {
+                        let url = format!("{}/chat/completions", p.config.base_url);
+                        build_openai_request(s, p, &url, &body_clone)
+                    })
+                    .await?;
+
+                let json: Value = response
+                    .json()
+                    .await
+                    .map_err(|e| GatewayError::UpstreamError(e.to_string()))?;
+                return Ok(Json(json).into_response());
+            }
+
             let url = format!("{}/chat/completions", pool.config.base_url);
             let req = build_openai_request(&state, &pool, &url, &body)?;
 
@@ -61,26 +83,29 @@ pub async fn chat_completions(
         }
         ProviderType::Anthropic => anthropic_chat(&state, &pool, body).await,
         ProviderType::Cursor => {
+            let tmux = state.tmux_manager.as_deref();
             if is_streaming(&body) {
-                crate::cursor::cursor_chat_streaming(&body, actual_model).await
+                crate::cursor::cursor_chat_streaming(&body, &actual_model, tmux).await
             } else {
-                let json = crate::cursor::cursor_chat(&body, actual_model).await?;
+                let json = crate::cursor::cursor_chat(&body, &actual_model, tmux).await?;
                 Ok(Json(json).into_response())
             }
         }
         ProviderType::ClaudeCode => {
+            let tmux = state.tmux_manager.as_deref();
             if is_streaming(&body) {
-                crate::claude_code::claude_code_chat_streaming(&body, actual_model).await
+                crate::claude_code::claude_code_chat_streaming(&body, &actual_model, tmux).await
             } else {
-                let json = crate::claude_code::claude_code_chat(&body, actual_model).await?;
+                let json = crate::claude_code::claude_code_chat(&body, &actual_model, tmux).await?;
                 Ok(Json(json).into_response())
             }
         }
         ProviderType::CodexCli => {
+            let tmux = state.tmux_manager.as_deref();
             if is_streaming(&body) {
-                crate::codex_cli::codex_cli_chat_streaming(&body, actual_model).await
+                crate::codex_cli::codex_cli_chat_streaming(&body, &actual_model, tmux).await
             } else {
-                let json = crate::codex_cli::codex_cli_chat(&body, actual_model).await?;
+                let json = crate::codex_cli::codex_cli_chat(&body, &actual_model, tmux).await?;
                 Ok(Json(json).into_response())
             }
         }
@@ -94,9 +119,9 @@ pub async fn embeddings(
     Json(mut body): Json<Value>,
 ) -> Result<Json<Value>, GatewayError> {
     let model_str = body["model"].as_str().unwrap_or("").to_string();
-    let (provider_name, actual_model) = parse_provider_model(&model_str);
+    let (provider_name, actual_model) = resolve_model(&model_str, &state);
 
-    let pool = match provider_name {
+    let pool = match provider_name.as_deref() {
         Some(name) => state.get_pool(name).await?,
         None => {
             state
@@ -355,6 +380,43 @@ fn parse_provider_model(s: &str) -> (Option<&str>, &str) {
         Some((provider, model)) => (Some(provider), model),
         None => (None, s),
     }
+}
+
+/// Resolve a model string, supporting `hint:<name>` routing.
+///
+/// Resolution order:
+/// 1. `"hint:<name>"` → look up in routing.model_routes → `(Some(provider), model)`
+/// 2. `"provider:model"` → `(Some(provider), model)`
+/// 3. `"model"` → check routing.default_route, then `(None, model)`
+fn resolve_model(model_str: &str, state: &AppState) -> (Option<String>, String) {
+    // Check for hint: prefix
+    if let Some(hint) = model_str.strip_prefix("hint:")
+        && let Some(ref routing) = state.routing
+        && let Some(route) = routing.model_routes.get(hint)
+    {
+        let (p, m) = parse_provider_model(route);
+        return (p.map(String::from), m.to_string());
+    }
+
+    // Standard provider:model parsing
+    let (p, m) = parse_provider_model(model_str);
+    if p.is_some() {
+        return (p.map(|s| s.to_string()), m.to_string());
+    }
+
+    // No provider specified — check default route
+    if let Some(ref routing) = state.routing
+        && let Some(ref default_route) = routing.default_route
+    {
+        let (dp, _dm) = parse_provider_model(default_route);
+        // Use default route's provider but keep the original model name
+        if !model_str.is_empty() {
+            return (dp.map(|s| s.to_string()), model_str.to_string());
+        }
+        return (dp.map(|s| s.to_string()), _dm.to_string());
+    }
+
+    (None, model_str.to_string())
 }
 
 #[cfg(test)]

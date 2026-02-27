@@ -10,6 +10,14 @@ use tracing::instrument;
 pub struct HealthResponse {
     pub status: &'static str,
     pub providers: Vec<ProviderHealth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tmux: Option<TmuxHealth>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TmuxHealth {
+    pub available: bool,
+    pub active_sessions: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,6 +56,16 @@ pub async fn health_handler(
         provider_healths.push(health);
     }
 
+    // Tmux health
+    let tmux_health = if let Some(ref manager) = state.tmux_manager {
+        Some(TmuxHealth {
+            available: true,
+            active_sessions: manager.active_count().await,
+        })
+    } else {
+        None
+    };
+
     let all_reachable = provider_healths.iter().all(|p| p.reachable);
     let status = if all_reachable {
         StatusCode::OK
@@ -60,6 +78,7 @@ pub async fn health_handler(
         Json(HealthResponse {
             status: if all_reachable { "ok" } else { "degraded" },
             providers: provider_healths,
+            tmux: tmux_health,
         }),
     )
 }

@@ -6,9 +6,13 @@ mod db;
 mod error;
 mod health;
 mod middleware;
+mod reliability;
 mod routes;
+mod service;
+mod session_socketio;
 mod state;
 mod stream;
+mod tmux;
 
 use anyhow::{Context, Result};
 use axum::{
@@ -20,8 +24,10 @@ use clap::{Parser, Subcommand};
 use evo_common::{config::GatewayConfig, logging::init_logging};
 use evo_gateway::auth::AuthStore;
 use middleware::auth::{AuthState, auth_middleware};
+use socketioxide::SocketIo;
 use state::AppState;
 use std::{net::SocketAddr, path::Path, sync::Arc};
+use tmux::TmuxManager;
 use tokio::sync::RwLock;
 use tracing::info;
 
@@ -45,6 +51,11 @@ enum Commands {
         #[command(subcommand)]
         action: AuthCommands,
     },
+    /// Manage evo-gateway as a system service (launchd on macOS, systemd on Linux)
+    Service {
+        #[command(subcommand)]
+        action: service::ServiceAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -65,12 +76,18 @@ async fn main() -> Result<()> {
     let _log_guard = init_logging("gateway");
 
     // Handle CLI subcommands
-    if let Some(Commands::Auth { action }) = cli.command {
-        return match action {
-            AuthCommands::Cursor => run_cursor_auth().await,
-            AuthCommands::Claude => run_claude_auth().await,
-            AuthCommands::Codex => run_codex_auth().await,
-        };
+    match cli.command {
+        Some(Commands::Auth { action }) => {
+            return match action {
+                AuthCommands::Cursor => run_cursor_auth().await,
+                AuthCommands::Claude => run_claude_auth().await,
+                AuthCommands::Codex => run_codex_auth().await,
+            };
+        }
+        Some(Commands::Service { action }) => {
+            return service::run_service_command(action).await;
+        }
+        None => {} // Continue to start server
     }
 
     // ── Start server (default, no subcommand) ───────────────────────────
@@ -86,7 +103,81 @@ async fn main() -> Result<()> {
     let host = config.server.host.clone();
     let port = config.server.port;
 
-    let state = Arc::new(AppState::new(config));
+    // ── Tmux session manager ──────────────────────────────────────────────────
+    let tmux_mode = std::env::var("EVO_GATEWAY_TMUX").unwrap_or_else(|_| "auto".into());
+    let tmux_manager = match tmux_mode.as_str() {
+        "disabled" => {
+            info!("tmux integration disabled by config");
+            None
+        }
+        "enabled" => {
+            let version = TmuxManager::check_tmux_available()
+                .await
+                .context("tmux is required (EVO_GATEWAY_TMUX=enabled) but not found")?;
+            info!(version = %version, "tmux required and available");
+            let output_dir = std::env::var("EVO_GATEWAY_TMUX_OUTPUT_DIR")
+                .unwrap_or_else(|_| "./tmux-output".into())
+                .into();
+            let max_sessions = std::env::var("EVO_GATEWAY_MAX_TMUX_SESSIONS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(8);
+            let mgr = Arc::new(TmuxManager::new(output_dir, max_sessions));
+            mgr.cleanup_orphaned().await;
+            Some(mgr)
+        }
+        _ => {
+            // "auto" mode — use tmux if available
+            match TmuxManager::check_tmux_available().await {
+                Ok(version) => {
+                    info!(version = %version, "tmux available, enabling session management");
+                    let output_dir = std::env::var("EVO_GATEWAY_TMUX_OUTPUT_DIR")
+                        .unwrap_or_else(|_| "./tmux-output".into())
+                        .into();
+                    let max_sessions = std::env::var("EVO_GATEWAY_MAX_TMUX_SESSIONS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(8);
+                    let mgr = Arc::new(TmuxManager::new(output_dir, max_sessions));
+                    mgr.cleanup_orphaned().await;
+                    Some(mgr)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "tmux not available, falling back to direct subprocess");
+                    None
+                }
+            }
+        }
+    };
+
+    // ── Socket.IO server ──────────────────────────────────────────────────────
+    let socketio_enabled = std::env::var("EVO_GATEWAY_SOCKETIO")
+        .map(|v| v != "false" && v != "0")
+        .unwrap_or(true);
+
+    let (socket_layer, io) = if socketio_enabled {
+        let (layer, io) = SocketIo::new_layer();
+        info!("Socket.IO server enabled for session management");
+        (Some(layer), Some(io))
+    } else {
+        info!("Socket.IO server disabled");
+        (None, None)
+    };
+
+    let state = Arc::new(AppState::new(config, tmux_manager.clone(), io.clone()));
+
+    // Register Socket.IO handlers
+    if let Some(io) = &io {
+        session_socketio::register_handlers(io.clone(), Arc::clone(&state));
+    }
+
+    // Spawn tmux cleanup task
+    if let Some(ref mgr) = tmux_manager {
+        let mgr = Arc::clone(mgr);
+        tokio::spawn(async move {
+            tmux::cleanup_loop(mgr).await;
+        });
+    }
 
     // Check cursor auth status on startup
     check_cursor_auth_status().await;
@@ -136,11 +227,17 @@ async fn main() -> Result<()> {
     };
 
     // Build router — /health stays unauthenticated, API routes get auth middleware
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/health", get(health::health_handler))
         .merge(routes::router().layer(from_fn_with_state(auth_state, auth_middleware)))
-        .layer(from_fn(middleware::request_logging))
-        .with_state(state);
+        .layer(from_fn(middleware::request_logging));
+
+    // Add Socket.IO layer if enabled (intercepts /socket.io/ path)
+    if let Some(layer) = socket_layer {
+        app = app.layer(layer);
+    }
+
+    let app = app.with_state(state);
 
     let addr: SocketAddr = format!("{host}:{port}")
         .parse()
@@ -518,6 +615,73 @@ fn default_config() -> GatewayConfig {
                 models: vec![],
             },
             ProviderConfig {
+                name: "gemini".to_string(),
+                base_url: "https://generativelanguage.googleapis.com/v1beta/openai".to_string(),
+                api_key_envs: vec!["GEMINI_API_KEY".to_string()],
+                enabled: false,
+                provider_type: ProviderType::OpenAiCompatible,
+                extra_headers: HashMap::new(),
+                rate_limit: None,
+                models: vec![
+                    "gemini-2.5-pro".into(),
+                    "gemini-2.5-flash".into(),
+                    "gemini-2.0-flash".into(),
+                ],
+            },
+            ProviderConfig {
+                name: "deepseek".to_string(),
+                base_url: "https://api.deepseek.com/v1".to_string(),
+                api_key_envs: vec!["DEEPSEEK_API_KEY".to_string()],
+                enabled: false,
+                provider_type: ProviderType::OpenAiCompatible,
+                extra_headers: HashMap::new(),
+                rate_limit: None,
+                models: vec!["deepseek-chat".into(), "deepseek-reasoner".into()],
+            },
+            ProviderConfig {
+                name: "mistral".to_string(),
+                base_url: "https://api.mistral.ai/v1".to_string(),
+                api_key_envs: vec!["MISTRAL_API_KEY".to_string()],
+                enabled: false,
+                provider_type: ProviderType::OpenAiCompatible,
+                extra_headers: HashMap::new(),
+                rate_limit: None,
+                models: vec!["mistral-large-latest".into(), "mistral-small-latest".into()],
+            },
+            ProviderConfig {
+                name: "groq".to_string(),
+                base_url: "https://api.groq.com/openai/v1".to_string(),
+                api_key_envs: vec!["GROQ_API_KEY".to_string()],
+                enabled: false,
+                provider_type: ProviderType::OpenAiCompatible,
+                extra_headers: HashMap::new(),
+                rate_limit: None,
+                models: vec![
+                    "llama-3.3-70b-versatile".into(),
+                    "mixtral-8x7b-32768".into(),
+                ],
+            },
+            ProviderConfig {
+                name: "together".to_string(),
+                base_url: "https://api.together.xyz/v1".to_string(),
+                api_key_envs: vec!["TOGETHER_API_KEY".to_string()],
+                enabled: false,
+                provider_type: ProviderType::OpenAiCompatible,
+                extra_headers: HashMap::new(),
+                rate_limit: None,
+                models: vec![],
+            },
+            ProviderConfig {
+                name: "xai".to_string(),
+                base_url: "https://api.x.ai/v1".to_string(),
+                api_key_envs: vec!["XAI_API_KEY".to_string()],
+                enabled: false,
+                provider_type: ProviderType::OpenAiCompatible,
+                extra_headers: HashMap::new(),
+                rate_limit: None,
+                models: vec!["grok-3".into(), "grok-3-mini".into()],
+            },
+            ProviderConfig {
                 name: "ollama".to_string(),
                 base_url: "http://localhost:11434".to_string(),
                 api_key_envs: vec![],
@@ -574,5 +738,7 @@ fn default_config() -> GatewayConfig {
                 ],
             },
         ],
+        reliability: None,
+        routing: None,
     }
 }

@@ -1,10 +1,12 @@
 //! Claude Code provider — spawns `claude` CLI subprocess in print mode.
 //!
-//! Mirrors the Cursor provider pattern: non-streaming and streaming chat via a
-//! local CLI binary, reusing shared helpers from `cli_common`.
+//! Supports two execution backends:
+//! - **Direct**: `tokio::process::Command` (original, used as fallback)
+//! - **Tmux**: managed tmux sessions via `TmuxManager` (preferred when available)
 
 use crate::cli_common::{build_openai_response_with_usage, build_sse_chunk, extract_prompt};
 use crate::error::GatewayError;
+use crate::tmux::{SessionMode, TmuxManager};
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
@@ -40,24 +42,36 @@ fn claude_binary() -> String {
 
 /// Execute a Claude Code request and return an OpenAI-compatible JSON response.
 ///
-/// Spawns: `claude -p <prompt> --output-format json --model <model> --max-turns 1`
-///
-/// Claude returns JSON like:
-/// ```json
-/// {"result": "...", "session_id": "...", "usage": {"input_tokens": N, "output_tokens": N}}
-/// ```
-pub async fn claude_code_chat(body: &Value, model: &str) -> Result<Value, GatewayError> {
+/// Routes to tmux-backed or direct subprocess execution depending on availability.
+pub async fn claude_code_chat(
+    body: &Value,
+    model: &str,
+    tmux: Option<&TmuxManager>,
+) -> Result<Value, GatewayError> {
     let prompt = extract_prompt(body)?;
     let binary = claude_binary();
 
+    if let Some(manager) = tmux {
+        claude_code_chat_tmux(manager, &prompt, model, &binary).await
+    } else {
+        claude_code_chat_direct(&prompt, model, &binary).await
+    }
+}
+
+/// Direct subprocess execution (original implementation).
+async fn claude_code_chat_direct(
+    prompt: &str,
+    model: &str,
+    binary: &str,
+) -> Result<Value, GatewayError> {
     let permit = SEMAPHORE.try_acquire().map_err(|_| {
         GatewayError::RateLimitExceeded("claude-code concurrent request limit reached".into())
     })?;
 
-    let mut cmd = tokio::process::Command::new(&binary);
+    let mut cmd = tokio::process::Command::new(binary);
     cmd.args([
         "-p",
-        &prompt,
+        prompt,
         "--output-format",
         "json",
         "--model",
@@ -68,7 +82,7 @@ pub async fn claude_code_chat(body: &Value, model: &str) -> Result<Value, Gatewa
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    debug!(binary = %binary, model = %model, "spawning claude");
+    debug!(binary = %binary, model = %model, "spawning claude (direct)");
 
     let child = cmd.spawn().map_err(|e| {
         GatewayError::ConfigError(format!(
@@ -93,7 +107,52 @@ pub async fn claude_code_chat(body: &Value, model: &str) -> Result<Value, Gatewa
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_claude_json_response(&stdout, model)
+}
 
+/// Tmux-backed execution.
+async fn claude_code_chat_tmux(
+    manager: &TmuxManager,
+    prompt: &str,
+    model: &str,
+    binary: &str,
+) -> Result<Value, GatewayError> {
+    let _permit = SEMAPHORE.try_acquire().map_err(|_| {
+        GatewayError::RateLimitExceeded("claude-code concurrent request limit reached".into())
+    })?;
+
+    let command = vec![
+        binary.to_string(),
+        "-p".into(),
+        prompt.to_string(),
+        "--output-format".into(),
+        "json".into(),
+        "--model".into(),
+        model.to_string(),
+        "--max-turns".into(),
+        "1".into(),
+    ];
+
+    debug!(binary = %binary, model = %model, "spawning claude (tmux)");
+
+    let session_id = manager
+        .create_session("claude-code", command, SessionMode::Ephemeral, None, None)
+        .await?;
+
+    let timeout = std::time::Duration::from_secs(timeout_secs());
+    let status = manager.wait_for_completion(&session_id, timeout).await;
+
+    let output = manager.read_output(&session_id).await.unwrap_or_default();
+    let _ = manager.kill_session(&session_id).await;
+
+    // Check for timeout
+    status?;
+
+    parse_claude_json_response(&output, model)
+}
+
+/// Parse Claude JSON output into an OpenAI-compatible response.
+fn parse_claude_json_response(stdout: &str, model: &str) -> Result<Value, GatewayError> {
     // Claude outputs a single JSON object
     let result_json: Value = serde_json::from_str(stdout.trim()).map_err(|e| {
         GatewayError::UpstreamError(format!("failed to parse claude output as JSON: {e}"))
@@ -104,7 +163,6 @@ pub async fn claude_code_chat(body: &Value, model: &str) -> Result<Value, Gatewa
         .as_str()
         .unwrap_or("claude-unknown");
 
-    // Extract usage if available
     let input_tokens = result_json["usage"]["input_tokens"].as_u64().unwrap_or(0);
     let output_tokens = result_json["usage"]["output_tokens"].as_u64().unwrap_or(0);
 
@@ -121,27 +179,36 @@ pub async fn claude_code_chat(body: &Value, model: &str) -> Result<Value, Gatewa
 
 /// Execute a Claude Code request in streaming mode, returning SSE chunks.
 ///
-/// Spawns: `claude -p <prompt> --output-format stream-json --verbose --model <model> --max-turns 1`
-///
-/// Claude emits NDJSON lines. Text deltas look like:
-/// ```json
-/// {"type": "assistant", "subtype": "text", "content_block_delta": {"type": "text_delta", "text": "..."}}
-/// ```
+/// Routes to tmux-backed or direct subprocess execution depending on availability.
 pub async fn claude_code_chat_streaming(
     body: &Value,
     model: &str,
+    tmux: Option<&TmuxManager>,
 ) -> Result<Response, GatewayError> {
     let prompt = extract_prompt(body)?;
     let binary = claude_binary();
 
+    if let Some(manager) = tmux {
+        claude_code_chat_streaming_tmux(manager, &prompt, model, &binary).await
+    } else {
+        claude_code_chat_streaming_direct(&prompt, model, &binary).await
+    }
+}
+
+/// Direct subprocess streaming (original implementation).
+async fn claude_code_chat_streaming_direct(
+    prompt: &str,
+    model: &str,
+    binary: &str,
+) -> Result<Response, GatewayError> {
     let permit = SEMAPHORE.try_acquire().map_err(|_| {
         GatewayError::RateLimitExceeded("claude-code concurrent request limit reached".into())
     })?;
 
-    let mut cmd = tokio::process::Command::new(&binary);
+    let mut cmd = tokio::process::Command::new(binary);
     cmd.args([
         "-p",
-        &prompt,
+        prompt,
         "--output-format",
         "stream-json",
         "--verbose",
@@ -153,7 +220,7 @@ pub async fn claude_code_chat_streaming(
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    debug!(binary = %binary, model = %model, "spawning claude (streaming)");
+    debug!(binary = %binary, model = %model, "spawning claude (streaming direct)");
 
     let mut child = cmd.spawn().map_err(|e| {
         GatewayError::ConfigError(format!(
@@ -192,9 +259,6 @@ pub async fn claude_code_chat_streaming(
                         continue;
                     };
 
-                    // Check for text delta events from claude stream-json output
-                    // Format: {"type": "assistant", "subtype": "text",
-                    //          "content_block_delta": {"type": "text_delta", "text": "..."}}
                     if let Some(delta) = json.get("content_block_delta") {
                         if delta["type"].as_str() == Some("text_delta")
                             && let Some(text) = delta["text"].as_str()
@@ -206,10 +270,7 @@ pub async fn claude_code_chat_streaming(
                         continue;
                     }
 
-                    // Also handle result event (final message)
                     if json["type"].as_str() == Some("result") {
-                        // Result signals end of stream; the content was already
-                        // streamed via deltas above.
                         let chunk = build_sse_chunk("", &model, &id, true);
                         yield Ok(chunk);
                         yield Ok("data: [DONE]\n\n".to_string());
@@ -217,7 +278,6 @@ pub async fn claude_code_chat_streaming(
                     }
                 }
                 Ok(Ok(None)) => {
-                    // EOF — send finish
                     let chunk = build_sse_chunk("", &model, &id, true);
                     yield Ok(chunk);
                     yield Ok("data: [DONE]\n\n".to_string());
@@ -234,10 +294,111 @@ pub async fn claude_code_chat_streaming(
             }
         }
 
-        // Ensure child is cleaned up
         let _ = child.kill().await;
     };
 
+    build_sse_response(stream)
+}
+
+/// Tmux-backed streaming execution.
+async fn claude_code_chat_streaming_tmux(
+    manager: &TmuxManager,
+    prompt: &str,
+    model: &str,
+    binary: &str,
+) -> Result<Response, GatewayError> {
+    let permit = SEMAPHORE.try_acquire().map_err(|_| {
+        GatewayError::RateLimitExceeded("claude-code concurrent request limit reached".into())
+    })?;
+
+    let command = vec![
+        binary.to_string(),
+        "-p".into(),
+        prompt.to_string(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "--verbose".into(),
+        "--model".into(),
+        model.to_string(),
+        "--max-turns".into(),
+        "1".into(),
+    ];
+
+    debug!(binary = %binary, model = %model, "spawning claude (streaming tmux)");
+
+    let session_id = manager
+        .create_session("claude-code", command, SessionMode::Ephemeral, None, None)
+        .await?;
+
+    let mut rx = manager.subscribe_output(&session_id).await?;
+    let model = model.to_string();
+    let id = uuid::Uuid::new_v4().to_string();
+    let sid = session_id.clone();
+    // Clone manager fields we need for the stream closure
+    // We need the session_id to kill later, but manager isn't Send-safe to move
+    // Instead we rely on ephemeral cleanup
+
+    let stream = async_stream::stream! {
+        let _permit = permit;
+
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    if event.is_final {
+                        let chunk = build_sse_chunk("", &model, &id, true);
+                        yield Ok::<_, std::io::Error>(chunk);
+                        yield Ok("data: [DONE]\n\n".to_string());
+                        break;
+                    }
+
+                    let line = &event.line;
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+
+                    let Ok(json): Result<Value, _> = serde_json::from_str(line) else {
+                        continue;
+                    };
+
+                    if let Some(delta) = json.get("content_block_delta") {
+                        if delta["type"].as_str() == Some("text_delta")
+                            && let Some(text) = delta["text"].as_str()
+                            && !text.is_empty()
+                        {
+                            let chunk = build_sse_chunk(text, &model, &id, false);
+                            yield Ok(chunk);
+                        }
+                        continue;
+                    }
+
+                    if json["type"].as_str() == Some("result") {
+                        let chunk = build_sse_chunk("", &model, &id, true);
+                        yield Ok(chunk);
+                        yield Ok("data: [DONE]\n\n".to_string());
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(skipped = n, session = %sid, "output subscriber lagged");
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    let chunk = build_sse_chunk("", &model, &id, true);
+                    yield Ok(chunk);
+                    yield Ok("data: [DONE]\n\n".to_string());
+                    break;
+                }
+            }
+        }
+    };
+
+    build_sse_response(stream)
+}
+
+/// Build an SSE response from an async stream of string results.
+pub(crate) fn build_sse_response(
+    stream: impl tokio_stream::Stream<Item = Result<String, std::io::Error>> + Send + 'static,
+) -> Result<Response, GatewayError> {
     let body = Body::from_stream(tokio_stream::wrappers::ReceiverStream::new({
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::io::Error>>(32);
         tokio::spawn(async move {
@@ -270,8 +431,6 @@ pub async fn claude_code_chat_streaming(
 // ─── Health check ───────────────────────────────────────────────────────────
 
 /// Check Claude Code availability by running `claude --version`.
-///
-/// Returns `(reachable, version_string)`.
 pub async fn check_claude_code_status() -> (bool, Option<String>) {
     let binary = claude_binary();
     let result = tokio::process::Command::new(&binary)

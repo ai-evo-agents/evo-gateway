@@ -1,6 +1,10 @@
 use crate::error::GatewayError;
-use evo_common::config::{GatewayConfig, ProviderConfig, ProviderType};
+use crate::tmux::TmuxManager;
+use evo_common::config::{
+    GatewayConfig, ProviderConfig, ProviderType, ReliabilityConfig, RoutingConfig,
+};
 use reqwest::Client;
+use socketioxide::SocketIo;
 use std::{
     collections::HashMap,
     sync::{
@@ -81,10 +85,22 @@ pub struct AppState {
     /// Key: provider name, Value: (discovered_at, model_ids).
     #[allow(clippy::type_complexity)]
     pub cli_models_cache: Arc<RwLock<HashMap<String, (Instant, Vec<String>)>>>,
+    /// Tmux session manager (None if tmux unavailable or disabled).
+    pub tmux_manager: Option<Arc<TmuxManager>>,
+    /// Socket.IO handle for broadcasting session events.
+    pub io: Option<SocketIo>,
+    /// Reliability config for retry/fallback (None = single-attempt mode).
+    pub reliability: Option<ReliabilityConfig>,
+    /// Hint-based model routing config (None = no hint routing).
+    pub routing: Option<RoutingConfig>,
 }
 
 impl AppState {
-    pub fn new(config: GatewayConfig) -> Self {
+    pub fn new(
+        config: GatewayConfig,
+        tmux_manager: Option<Arc<TmuxManager>>,
+        io: Option<SocketIo>,
+    ) -> Self {
         let pools = build_pools(config.providers);
         let http_client = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
@@ -95,6 +111,10 @@ impl AppState {
             pools: Arc::new(RwLock::new(pools)),
             http_client: Arc::new(http_client),
             cli_models_cache: Arc::new(RwLock::new(HashMap::new())),
+            tmux_manager,
+            io,
+            reliability: config.reliability,
+            routing: config.routing,
         }
     }
 

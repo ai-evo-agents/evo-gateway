@@ -29,6 +29,15 @@ pub enum GatewayError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Tmux error: {0}")]
+    TmuxError(String),
+
+    #[error("Session not found: {0}")]
+    SessionNotFound(String),
+
+    #[error("Session timeout: {0}")]
+    SessionTimeout(String),
 }
 
 impl IntoResponse for GatewayError {
@@ -59,6 +68,19 @@ impl IntoResponse for GatewayError {
             Self::Internal(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
+                self.to_string(),
+            ),
+            Self::TmuxError(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "TMUX_ERROR",
+                self.to_string(),
+            ),
+            Self::SessionNotFound(_) => {
+                (StatusCode::NOT_FOUND, "SESSION_NOT_FOUND", self.to_string())
+            }
+            Self::SessionTimeout(_) => (
+                StatusCode::GATEWAY_TIMEOUT,
+                "SESSION_TIMEOUT",
                 self.to_string(),
             ),
         };

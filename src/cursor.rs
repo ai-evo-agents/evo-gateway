@@ -1,7 +1,12 @@
+//! Cursor provider — spawns `cursor-agent` CLI subprocess.
+//!
+//! Supports two execution backends:
+//! - **Direct**: `tokio::process::Command` (original, used as fallback)
+//! - **Tmux**: managed tmux sessions via `TmuxManager` (preferred when available)
+
 use crate::cli_common::{build_openai_response, build_sse_chunk, extract_prompt};
 use crate::error::GatewayError;
-use axum::body::Body;
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use crate::tmux::{SessionMode, TmuxManager};
 use axum::response::Response;
 use serde_json::Value;
 use std::sync::LazyLock;
@@ -34,15 +39,32 @@ fn cursor_binary() -> String {
 // ─── Non-streaming ──────────────────────────────────────────────────────────
 
 /// Execute a cursor-agent request and return an OpenAI-compatible JSON response.
-pub async fn cursor_chat(body: &Value, model: &str) -> Result<Value, GatewayError> {
+pub async fn cursor_chat(
+    body: &Value,
+    model: &str,
+    tmux: Option<&TmuxManager>,
+) -> Result<Value, GatewayError> {
     let prompt = extract_prompt(body)?;
     let binary = cursor_binary();
 
+    if let Some(manager) = tmux {
+        cursor_chat_tmux(manager, &prompt, model, &binary).await
+    } else {
+        cursor_chat_direct(&prompt, model, &binary).await
+    }
+}
+
+/// Direct subprocess execution (original implementation).
+async fn cursor_chat_direct(
+    prompt: &str,
+    model: &str,
+    binary: &str,
+) -> Result<Value, GatewayError> {
     let permit = SEMAPHORE.try_acquire().map_err(|_| {
         GatewayError::RateLimitExceeded("cursor concurrent request limit reached".into())
     })?;
 
-    let mut cmd = tokio::process::Command::new(&binary);
+    let mut cmd = tokio::process::Command::new(binary);
     cmd.args([
         "--print",
         "--output-format",
@@ -52,12 +74,12 @@ pub async fn cursor_chat(body: &Value, model: &str) -> Result<Value, GatewayErro
         "--mode",
         "ask",
         "--trust",
-        &prompt,
+        prompt,
     ]);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    debug!(binary = %binary, model = %model, "spawning cursor-agent");
+    debug!(binary = %binary, model = %model, "spawning cursor-agent (direct)");
 
     let child = cmd.spawn().map_err(|e| {
         GatewayError::ConfigError(format!(
@@ -82,9 +104,53 @@ pub async fn cursor_chat(body: &Value, model: &str) -> Result<Value, GatewayErro
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_cursor_response(&stdout, model)
+}
 
-    // cursor-agent may output multiple JSON lines; find the result line
-    let result_json = find_result_line(&stdout)?;
+/// Tmux-backed execution.
+async fn cursor_chat_tmux(
+    manager: &TmuxManager,
+    prompt: &str,
+    model: &str,
+    binary: &str,
+) -> Result<Value, GatewayError> {
+    let _permit = SEMAPHORE.try_acquire().map_err(|_| {
+        GatewayError::RateLimitExceeded("cursor concurrent request limit reached".into())
+    })?;
+
+    let command = vec![
+        binary.to_string(),
+        "--print".into(),
+        "--output-format".into(),
+        "json".into(),
+        "--model".into(),
+        model.to_string(),
+        "--mode".into(),
+        "ask".into(),
+        "--trust".into(),
+        prompt.to_string(),
+    ];
+
+    debug!(binary = %binary, model = %model, "spawning cursor-agent (tmux)");
+
+    let session_id = manager
+        .create_session("cursor", command, SessionMode::Ephemeral, None, None)
+        .await?;
+
+    let timeout = std::time::Duration::from_secs(timeout_secs());
+    let status = manager.wait_for_completion(&session_id, timeout).await;
+
+    let output = manager.read_output(&session_id).await.unwrap_or_default();
+    let _ = manager.kill_session(&session_id).await;
+
+    status?;
+
+    parse_cursor_response(&output, model)
+}
+
+/// Parse cursor-agent output into an OpenAI-compatible response.
+fn parse_cursor_response(stdout: &str, model: &str) -> Result<Value, GatewayError> {
+    let result_json = find_result_line(stdout)?;
 
     if result_json["is_error"].as_bool().unwrap_or(false) {
         return Err(GatewayError::UpstreamError(format!(
@@ -104,15 +170,32 @@ pub async fn cursor_chat(body: &Value, model: &str) -> Result<Value, GatewayErro
 // ─── Streaming ──────────────────────────────────────────────────────────────
 
 /// Execute a cursor-agent request in streaming mode, returning SSE chunks.
-pub async fn cursor_chat_streaming(body: &Value, model: &str) -> Result<Response, GatewayError> {
+pub async fn cursor_chat_streaming(
+    body: &Value,
+    model: &str,
+    tmux: Option<&TmuxManager>,
+) -> Result<Response, GatewayError> {
     let prompt = extract_prompt(body)?;
     let binary = cursor_binary();
 
+    if let Some(manager) = tmux {
+        cursor_chat_streaming_tmux(manager, &prompt, model, &binary).await
+    } else {
+        cursor_chat_streaming_direct(&prompt, model, &binary).await
+    }
+}
+
+/// Direct subprocess streaming (original implementation).
+async fn cursor_chat_streaming_direct(
+    prompt: &str,
+    model: &str,
+    binary: &str,
+) -> Result<Response, GatewayError> {
     let permit = SEMAPHORE.try_acquire().map_err(|_| {
         GatewayError::RateLimitExceeded("cursor concurrent request limit reached".into())
     })?;
 
-    let mut cmd = tokio::process::Command::new(&binary);
+    let mut cmd = tokio::process::Command::new(binary);
     cmd.args([
         "--print",
         "--output-format",
@@ -123,12 +206,12 @@ pub async fn cursor_chat_streaming(body: &Value, model: &str) -> Result<Response
         "--mode",
         "ask",
         "--trust",
-        &prompt,
+        prompt,
     ]);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    debug!(binary = %binary, model = %model, "spawning cursor-agent (streaming)");
+    debug!(binary = %binary, model = %model, "spawning cursor-agent (streaming direct)");
 
     let mut child = cmd.spawn().map_err(|e| {
         GatewayError::ConfigError(format!(
@@ -168,11 +251,9 @@ pub async fn cursor_chat_streaming(body: &Value, model: &str) -> Result<Response
                         continue;
                     };
 
-                    // Check for partial output or final result
                     let msg_type = json["type"].as_str().unwrap_or("");
 
                     if msg_type == "result" {
-                        // Final result — compute the remaining delta
                         if let Some(full) = json["result"].as_str()
                             && full.len() > accumulated.len()
                         {
@@ -180,14 +261,12 @@ pub async fn cursor_chat_streaming(body: &Value, model: &str) -> Result<Response
                             let chunk = build_sse_chunk(delta, &model, &id, false);
                             yield Ok::<_, std::io::Error>(chunk);
                         }
-                        // Send finish chunk
                         let chunk = build_sse_chunk("", &model, &id, true);
                         yield Ok(chunk);
                         yield Ok("data: [DONE]\n\n".to_string());
                         break;
                     }
 
-                    // Partial output: compute delta from accumulated content
                     if let Some(partial) = json["result"].as_str().or(json["content"].as_str())
                         && partial.len() > accumulated.len()
                     {
@@ -198,7 +277,6 @@ pub async fn cursor_chat_streaming(body: &Value, model: &str) -> Result<Response
                     }
                 }
                 Ok(Ok(None)) => {
-                    // EOF — send finish
                     let chunk = build_sse_chunk("", &model, &id, true);
                     yield Ok(chunk);
                     yield Ok("data: [DONE]\n\n".to_string());
@@ -215,37 +293,111 @@ pub async fn cursor_chat_streaming(body: &Value, model: &str) -> Result<Response
             }
         }
 
-        // Ensure child is cleaned up
         let _ = child.kill().await;
     };
 
-    let body = Body::from_stream(tokio_stream::wrappers::ReceiverStream::new({
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::io::Error>>(32);
-        tokio::spawn(async move {
-            use tokio_stream::StreamExt;
-            let mut stream = std::pin::pin!(stream);
-            while let Some(item) = stream.next().await {
-                if tx.send(item).await.is_err() {
+    crate::claude_code::build_sse_response(stream)
+}
+
+/// Tmux-backed streaming execution.
+async fn cursor_chat_streaming_tmux(
+    manager: &TmuxManager,
+    prompt: &str,
+    model: &str,
+    binary: &str,
+) -> Result<Response, GatewayError> {
+    let permit = SEMAPHORE.try_acquire().map_err(|_| {
+        GatewayError::RateLimitExceeded("cursor concurrent request limit reached".into())
+    })?;
+
+    let command = vec![
+        binary.to_string(),
+        "--print".into(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "--stream-partial-output".into(),
+        "--model".into(),
+        model.to_string(),
+        "--mode".into(),
+        "ask".into(),
+        "--trust".into(),
+        prompt.to_string(),
+    ];
+
+    debug!(binary = %binary, model = %model, "spawning cursor-agent (streaming tmux)");
+
+    let session_id = manager
+        .create_session("cursor", command, SessionMode::Ephemeral, None, None)
+        .await?;
+
+    let mut rx = manager.subscribe_output(&session_id).await?;
+    let model = model.to_string();
+    let id = uuid::Uuid::new_v4().to_string();
+    let sid = session_id.clone();
+
+    let stream = async_stream::stream! {
+        let _permit = permit;
+        let mut accumulated = String::new();
+
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    if event.is_final {
+                        let chunk = build_sse_chunk("", &model, &id, true);
+                        yield Ok::<_, std::io::Error>(chunk);
+                        yield Ok("data: [DONE]\n\n".to_string());
+                        break;
+                    }
+
+                    let line = &event.line;
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+
+                    let Ok(json): Result<Value, _> = serde_json::from_str(line) else {
+                        continue;
+                    };
+
+                    let msg_type = json["type"].as_str().unwrap_or("");
+
+                    if msg_type == "result" {
+                        if let Some(full) = json["result"].as_str()
+                            && full.len() > accumulated.len()
+                        {
+                            let delta = &full[accumulated.len()..];
+                            let chunk = build_sse_chunk(delta, &model, &id, false);
+                            yield Ok(chunk);
+                        }
+                        let chunk = build_sse_chunk("", &model, &id, true);
+                        yield Ok(chunk);
+                        yield Ok("data: [DONE]\n\n".to_string());
+                        break;
+                    }
+
+                    if let Some(partial) = json["result"].as_str().or(json["content"].as_str())
+                        && partial.len() > accumulated.len()
+                    {
+                        let delta = &partial[accumulated.len()..];
+                        let chunk = build_sse_chunk(delta, &model, &id, false);
+                        accumulated = partial.to_string();
+                        yield Ok(chunk);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(skipped = n, session = %sid, "output subscriber lagged");
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    let chunk = build_sse_chunk("", &model, &id, true);
+                    yield Ok(chunk);
+                    yield Ok("data: [DONE]\n\n".to_string());
                     break;
                 }
             }
-        });
-        rx
-    }));
+        }
+    };
 
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "content-type",
-        HeaderValue::from_static("text/event-stream"),
-    );
-    headers.insert("cache-control", HeaderValue::from_static("no-cache"));
-    headers.insert("connection", HeaderValue::from_static("keep-alive"));
-
-    let mut resp = Response::new(body);
-    *resp.status_mut() = StatusCode::OK;
-    *resp.headers_mut() = headers;
-
-    Ok(resp)
+    crate::claude_code::build_sse_response(stream)
 }
 
 // ─── Health check ───────────────────────────────────────────────────────────
@@ -288,7 +440,6 @@ fn find_result_line(stdout: &str) -> Result<Value, GatewayError> {
             return Ok(json);
         }
     }
-    // Fall back to trying the last non-empty line
     let last_line = stdout
         .lines()
         .rev()
