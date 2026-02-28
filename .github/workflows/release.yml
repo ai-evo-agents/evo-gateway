@@ -45,7 +45,7 @@ jobs:
       - name: Use crates.io dependencies
         shell: bash
         run: |
-          sed -i.bak 's|evo-common.*=.*{.*path.*=.*"[^"]*".*}|evo-common = "0.6"|' Cargo.toml
+          sed -i.bak 's|path = "\.\./evo-common"|version = "0.8"|' Cargo.toml
           rm -f Cargo.toml.bak
 
       - name: Build (cross)
