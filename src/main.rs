@@ -21,7 +21,7 @@ use axum::{
     routing::get,
 };
 use clap::{Parser, Subcommand};
-use evo_common::{config::GatewayConfig, logging::init_logging};
+use evo_common::{config::GatewayConfig, logging::init_logging_with_otel};
 use evo_gateway::auth::AuthStore;
 use middleware::auth::{AuthState, auth_middleware};
 use socketioxide::SocketIo;
@@ -72,8 +72,10 @@ enum AuthCommands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Init structured logging — guard must stay alive for the process lifetime
-    let _log_guard = init_logging("gateway");
+    // Init structured logging with OpenTelemetry — guards must stay alive
+    let otlp_endpoint =
+        std::env::var("EVO_OTLP_ENDPOINT").unwrap_or_else(|_| "http://localhost:3300".to_string());
+    let (_log_guard, _otel_guard) = init_logging_with_otel("gateway", &otlp_endpoint);
 
     // Handle CLI subcommands
     match cli.command {

@@ -31,7 +31,7 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4"] }
-evo-common = { path = "../evo-common" }
+evo-common = { path = "../evo-common", features = ["tracing-otel"] }
 sha2 = "0.10"
 rand = "0.9"
 hex = "0.4"

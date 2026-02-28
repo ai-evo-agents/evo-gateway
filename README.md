@@ -391,6 +391,7 @@ cargo clippy -- -D warnings
 | `EVO_GATEWAY_DB_PATH` | `gateway.db` | Path to local libSQL database for credentials |
 | `RUST_LOG` | `info` | Log level filter |
 | `EVO_LOG_DIR` | `./logs` | Structured log output directory |
+| `EVO_OTLP_ENDPOINT` | `http://localhost:3300` | OTLP HTTP endpoint for distributed tracing (evo-king) |
 
 ---
 
