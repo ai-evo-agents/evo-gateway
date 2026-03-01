@@ -90,3 +90,56 @@ pub async fn save_cursor_auth(conn: &Connection, email: &str) -> Result<()> {
 pub async fn get_cursor_auth(conn: &Connection) -> Result<Option<ProviderAuth>> {
     get_provider_auth(conn, "cursor").await
 }
+
+/// Store (upsert) codex-auth OAuth token and optional account ID.
+///
+/// Uses the existing credentials table: token goes in `api_key`, account_id in `email`.
+pub async fn save_codex_auth_token(
+    conn: &Connection,
+    token: &str,
+    account_id: Option<&str>,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO credentials (provider, status, email, api_key, updated_at)
+         VALUES ('codex-auth', 'authenticated', ?1, ?2, ?3)
+         ON CONFLICT(provider) DO UPDATE SET
+           status = 'authenticated',
+           email = excluded.email,
+           api_key = excluded.api_key,
+           updated_at = excluded.updated_at",
+        libsql::params![account_id.unwrap_or(""), token, now],
+    )
+    .await
+    .context("Failed to save codex-auth token")?;
+    Ok(())
+}
+
+/// Retrieve codex-auth OAuth token and optional account ID.
+///
+/// Returns `(token, Option<account_id>)` or `None` if not authenticated.
+pub async fn get_codex_auth_token(conn: &Connection) -> Result<Option<(String, Option<String>)>> {
+    let mut rows = conn
+        .query(
+            "SELECT api_key, email FROM credentials WHERE provider = 'codex-auth' AND status = 'authenticated'",
+            (),
+        )
+        .await
+        .context("Failed to query codex-auth token")?;
+
+    let row = rows.next().await.context("Failed to read codex-auth row")?;
+    match row {
+        Some(row) => {
+            let token: String = row.get(0).context("Failed to read api_key column")?;
+            if token.is_empty() {
+                return Ok(None);
+            }
+            let account_id: Option<String> = row
+                .get::<String>(1)
+                .ok()
+                .and_then(|s| if s.is_empty() { None } else { Some(s) });
+            Ok(Some((token, account_id)))
+        }
+        None => Ok(None),
+    }
+}

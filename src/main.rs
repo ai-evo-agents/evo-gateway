@@ -1,5 +1,6 @@
 mod claude_code;
 mod cli_common;
+mod codex_auth;
 mod codex_cli;
 mod cursor;
 mod db;
@@ -66,6 +67,15 @@ enum AuthCommands {
     Claude,
     /// Authenticate with Codex CLI
     Codex,
+    /// Authenticate with OpenAI Codex Responses API (access token)
+    CodexAuth {
+        /// API key or OAuth bearer token (skip interactive prompt)
+        #[arg(long)]
+        token: Option<String>,
+        /// ChatGPT account ID to send with requests (optional)
+        #[arg(long)]
+        account_id: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -84,6 +94,9 @@ async fn main() -> Result<()> {
                 AuthCommands::Cursor => run_cursor_auth().await,
                 AuthCommands::Claude => run_claude_auth().await,
                 AuthCommands::Codex => run_codex_auth().await,
+                AuthCommands::CodexAuth { token, account_id } => {
+                    run_codex_auth_flow(token, account_id).await
+                }
             };
         }
         Some(Commands::Service { action }) => {
@@ -408,6 +421,91 @@ async fn run_codex_auth() -> Result<()> {
         println!("  Version: {version}");
     }
     println!("\nEnable codex-cli in your gateway.json by setting codex-cli.enabled = true");
+
+    Ok(())
+}
+
+/// Interactive authentication flow for OpenAI Codex Responses API.
+///
+/// Accepts optional pre-supplied `token` / `account_id` (from `--token` / `--account-id`
+/// flags) to allow non-interactive use. Falls back to interactive stdin prompts.
+///
+/// Stores credentials in the gateway database. The DB path is resolved the same way
+/// the server resolves it: `EVO_GATEWAY_DB_PATH` env or `gateway.db` relative to CWD.
+async fn run_codex_auth_flow(
+    cli_token: Option<String>,
+    cli_account_id: Option<String>,
+) -> Result<()> {
+    use std::io::{self, BufRead, Write};
+
+    println!("OpenAI Codex Responses API Authentication");
+    println!("==========================================\n");
+
+    // ── Token ──────────────────────────────────────────────────────────────
+    let token = if let Some(t) = cli_token {
+        // Non-interactive: token supplied via --token flag
+        println!("Using token from --token flag.");
+        t
+    } else {
+        println!("Paste your OpenAI API key or access token below.");
+        println!("(This will be stored in the gateway database for API requests.)");
+        println!("Tip: you can also run non-interactively with --token <TOKEN>\n");
+
+        print!("Access token: ");
+        io::stdout().flush()?;
+        let stdin = io::stdin();
+        let mut line = String::new();
+        stdin.lock().read_line(&mut line)?;
+        let t = line.trim().to_string();
+        if t.is_empty() {
+            anyhow::bail!("No token provided. Aborting.");
+        }
+        t
+    };
+
+    // ── Account ID ─────────────────────────────────────────────────────────
+    let account_id = if let Some(id) = cli_account_id {
+        if id.is_empty() {
+            None
+        } else {
+            Some(id)
+        }
+    } else {
+        print!("Account ID (optional, press Enter to skip): ");
+        io::stdout().flush()?;
+        let stdin = io::stdin();
+        let mut line = String::new();
+        stdin.lock().read_line(&mut line)?;
+        let trimmed = line.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    };
+
+    let db = crate::db::init_db()
+        .await
+        .context("Failed to initialize database")?;
+    let conn = db.connect().context("Failed to connect to database")?;
+    crate::db::save_codex_auth_token(&conn, &token, account_id.as_deref())
+        .await
+        .context("Failed to save codex-auth token")?;
+
+    println!("\nCodex Auth configured successfully!");
+    println!(
+        "  Token: {}...{}",
+        &token[..8.min(token.len())],
+        if token.len() > 12 {
+            &token[token.len() - 4..]
+        } else {
+            ""
+        }
+    );
+    if let Some(ref id) = account_id {
+        println!("  Account ID: {id}");
+    }
+    println!("\nEnable codex-auth in your gateway.json by setting codex-auth.enabled = true");
 
     Ok(())
 }
@@ -737,6 +835,22 @@ fn default_config() -> GatewayConfig {
                     "gpt-5.2".into(),
                     "gpt-5.1-codex-mini".into(),
                     "default".into(),
+                ],
+            },
+            ProviderConfig {
+                name: "codex-auth".to_string(),
+                base_url: "https://api.openai.com/v1".to_string(),
+                api_key_envs: vec!["OPENAI_API_KEY".to_string()],
+                enabled: false,
+                provider_type: ProviderType::CodexAuth,
+                extra_headers: HashMap::new(),
+                rate_limit: None,
+                models: vec![
+                    "codex-mini-latest".into(),
+                    "gpt-4.1".into(),
+                    "gpt-4.1-mini".into(),
+                    "o3".into(),
+                    "o4-mini".into(),
                 ],
             },
         ],

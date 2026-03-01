@@ -109,6 +109,14 @@ pub async fn chat_completions(
                 Ok(Json(json).into_response())
             }
         }
+        ProviderType::CodexAuth => {
+            if is_streaming(&body) {
+                crate::codex_auth::codex_auth_chat_streaming(&state, &pool, body, &actual_model)
+                    .await
+            } else {
+                crate::codex_auth::codex_auth_chat(&state, &pool, body, &actual_model).await
+            }
+        }
     }
 }
 
@@ -181,6 +189,7 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<Valu
             ProviderType::Cursor => "cursor",
             ProviderType::ClaudeCode => "claude_code",
             ProviderType::CodexCli => "codex_cli",
+            ProviderType::CodexAuth => "codex_auth",
         };
 
         for model_id in &model_ids {
@@ -237,6 +246,7 @@ pub async fn list_provider_models(
         ProviderType::Cursor => "cursor",
         ProviderType::ClaudeCode => "claude_code",
         ProviderType::CodexCli => "codex_cli",
+        ProviderType::CodexAuth => "codex_auth",
     };
 
     let models: Vec<Value> = model_ids

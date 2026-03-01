@@ -43,3 +43,5 @@ portable-pty = "0.8"
 regex = "1"
 socketioxide = "0.14"
 dirs = "6"
+tokio-tungstenite = { version = "0.26", features = ["native-tls-vendored"] }
+futures-util = { version = "0.3", features = ["sink"] }
