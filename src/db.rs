@@ -4,6 +4,61 @@ use tracing::info;
 
 const DEFAULT_DB_PATH: &str = "gateway.db";
 
+/// Absolute path used exclusively for codex-auth credential storage:
+/// `$HOME/.evo-gateway/gateway.db`.
+///
+/// This makes `evo-gateway auth codex-auth` and the running server agree on
+/// the same file regardless of their respective working directories.
+pub fn codex_auth_db_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".into());
+    std::path::Path::new(&home)
+        .join(".evo-gateway")
+        .join("gateway.db")
+}
+
+/// Open (or create) the codex-auth credential database at the fixed home-dir
+/// path returned by [`codex_auth_db_path`].
+///
+/// Creates `~/.evo-gateway/` if it does not exist yet.
+pub async fn init_codex_auth_db() -> Result<Database> {
+    let path = codex_auth_db_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory {}", parent.display()))?;
+    }
+    let path_str = path
+        .to_str()
+        .context("codex-auth DB path is not valid UTF-8")?
+        .to_string();
+
+    let db = Builder::new_local(&path_str)
+        .build()
+        .await
+        .with_context(|| format!("Failed to open codex-auth database at {path_str}"))?;
+
+    let conn = db
+        .connect()
+        .context("Failed to connect to codex-auth database")?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS credentials (
+            provider   TEXT PRIMARY KEY,
+            status     TEXT NOT NULL,
+            email      TEXT,
+            api_key    TEXT,
+            updated_at TEXT NOT NULL
+        )",
+        (),
+    )
+    .await
+    .context("Failed to create credentials table in codex-auth DB")?;
+
+    info!(path = %path_str, "codex-auth database initialized");
+    Ok(db)
+}
+
 /// Credential record for any provider (cursor, claude-code, codex-cli, etc.).
 #[derive(Debug, Clone)]
 pub struct ProviderAuth {

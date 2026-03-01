@@ -409,8 +409,8 @@ fn parse_sse_body(body: &str) -> Result<Option<String>, GatewayError> {
 async fn resolve_bearer_token(
     pool: &ProviderPool,
 ) -> Result<(String, Option<String>), GatewayError> {
-    // Try DB-stored OAuth token
-    if let Ok(db) = crate::db::init_db().await
+    // Try DB-stored OAuth token (always from $HOME/.evo-gateway/gateway.db)
+    if let Ok(db) = crate::db::init_codex_auth_db().await
         && let Ok(conn) = db.connect()
         && let Ok(Some((token, account_id))) = crate::db::get_codex_auth_token(&conn).await
     {

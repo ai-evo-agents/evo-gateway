@@ -442,13 +442,15 @@ async fn run_codex_auth_flow(
     println!("==========================================\n");
 
     // ── Token ──────────────────────────────────────────────────────────────
+    // Track whether we're running non-interactively (--token flag supplied).
+    let non_interactive = cli_token.is_some();
+
     let token = if let Some(t) = cli_token {
         // Non-interactive: token supplied via --token flag
-        println!("Using token from --token flag.");
         t
     } else {
         println!("Paste your OpenAI API key or access token below.");
-        println!("(This will be stored in the gateway database for API requests.)");
+        println!("(This will be stored in ~/.evo-gateway/gateway.db)");
         println!("Tip: you can also run non-interactively with --token <TOKEN>\n");
 
         print!("Access token: ");
@@ -464,12 +466,11 @@ async fn run_codex_auth_flow(
     };
 
     // ── Account ID ─────────────────────────────────────────────────────────
+    // When --token was given without --account-id, skip the prompt (default None).
     let account_id = if let Some(id) = cli_account_id {
-        if id.is_empty() {
-            None
-        } else {
-            Some(id)
-        }
+        if id.is_empty() { None } else { Some(id) }
+    } else if non_interactive {
+        None
     } else {
         print!("Account ID (optional, press Enter to skip): ");
         io::stdout().flush()?;
@@ -484,15 +485,19 @@ async fn run_codex_auth_flow(
         }
     };
 
-    let db = crate::db::init_db()
+    // Always store in $HOME/.evo-gateway/gateway.db so auth command and
+    // running server agree on the same file regardless of working directory.
+    let db_path = crate::db::codex_auth_db_path();
+    let db = crate::db::init_codex_auth_db()
         .await
-        .context("Failed to initialize database")?;
+        .context("Failed to initialize codex-auth database")?;
     let conn = db.connect().context("Failed to connect to database")?;
     crate::db::save_codex_auth_token(&conn, &token, account_id.as_deref())
         .await
         .context("Failed to save codex-auth token")?;
 
     println!("\nCodex Auth configured successfully!");
+    println!("  DB: {}", db_path.display());
     println!(
         "  Token: {}...{}",
         &token[..8.min(token.len())],
