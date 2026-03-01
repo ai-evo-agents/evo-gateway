@@ -1,8 +1,8 @@
 # evo-gateway
 
-API aggregator for the Evo self-evolution agent system. Provides a unified API interface over multiple LLM providers (OpenAI, Anthropic, Cursor, Claude Code, Codex CLI, local LLMs via Ollama/vLLM), so agents in the Evo system make all external API calls through a single, configurable gateway.
+API aggregator for the Evo self-evolution agent system. Provides a unified API interface over multiple LLM providers (OpenAI, Anthropic, Cursor, Claude Code, Codex CLI, Codex Responses API, local LLMs via Ollama/vLLM), so agents in the Evo system make all external API calls through a single, configurable gateway.
 
-Supports **SSE streaming** for AI coding tools (Codex CLI, Cursor, Claude Code) and optional **API key authentication** for shared deployments.
+Supports **SSE streaming** for AI coding tools (Codex CLI, Cursor, Claude Code, Codex Auth) and optional **API key authentication** for shared deployments.
 
 ---
 
@@ -112,13 +112,27 @@ The Cursor provider uses the `cursor-agent` CLI for OAuth-based authentication i
 
 ```bash
 # Authenticate with Cursor (opens browser for OAuth)
-cargo run -- auth cursor
-
-# Or with a release build
-./target/release/evo-gateway auth cursor
+evo-gateway auth cursor
 ```
 
 This runs `cursor-agent login`, then saves the auth status to a local database (`gateway.db`). On server startup, the gateway checks and logs the cursor auth status.
+
+### Codex Auth (OpenAI Responses API)
+
+The `codex-auth` provider calls the OpenAI Responses API directly with a bearer token, supporting both SSE and WebSocket transports (WebSocket primary, SSE fallback). Authenticate with your OpenAI API key or OAuth access token:
+
+```bash
+# Interactive — prompts for token
+evo-gateway auth codex-auth
+
+# Non-interactive
+evo-gateway auth codex-auth --token sk-your-openai-key
+
+# With optional ChatGPT account ID
+evo-gateway auth codex-auth --token sk-... --account-id org-xyz
+```
+
+The token is stored in `~/.evo-gateway/gateway.db` regardless of working directory, so both the auth command and the running server always agree on the same credentials. Alternatively, set the `OPENAI_API_KEY` environment variable as a fallback.
 
 ### Sending Authenticated Requests
 
@@ -234,6 +248,15 @@ The gateway reads `gateway.json` at startup (auto-generated with defaults if mis
       "enabled": false,
       "provider_type": "codex_cli",
       "extra_headers": {}
+    },
+    {
+      "name": "codex-auth",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_envs": ["OPENAI_API_KEY"],
+      "enabled": false,
+      "provider_type": "codex_auth",
+      "extra_headers": {},
+      "models": ["codex-mini-latest", "gpt-4.1", "gpt-4.1-mini", "o3", "o4-mini"]
     }
   ]
 }
@@ -275,6 +298,8 @@ The OpenAI-compatible endpoint supports `"model": "provider:model"` syntax:
 { "model": "cursor:auto", "messages": [...] }
 { "model": "claude-code:sonnet", "messages": [...] }
 { "model": "codex-cli:o4-mini", "messages": [...] }
+{ "model": "codex-auth:codex-mini-latest", "messages": [...] }
+{ "model": "codex-auth:gpt-4.1", "messages": [...] }
 ```
 
 If no provider prefix is given, the first enabled provider is used by default.
@@ -322,7 +347,8 @@ evo-gateway/
     cursor.rs             # Cursor provider — cursor-agent CLI integration (chat + streaming)
     claude_code.rs        # Claude Code provider — claude CLI integration (chat + streaming)
     codex_cli.rs          # Codex CLI provider — codex CLI integration (chat + streaming + PTY model discovery)
-    db.rs                 # Local libSQL database for credential storage (cursor auth)
+    db.rs                 # Local libSQL database for credential storage (cursor/codex-auth)
+    codex_auth.rs         # Codex Auth provider — OpenAI Responses API (SSE + WebSocket, OAuth token)
     routes/
       mod.rs              # Route registry
       openai.rs           # POST /v1/chat/completions, /v1/embeddings, GET /v1/models, GET /v1/models/:provider
@@ -388,10 +414,12 @@ cargo clippy -- -D warnings
 | `CODEX_CLI_BINARY` | `codex` | Path to the Codex CLI binary |
 | `CODEX_CLI_MAX_CONCURRENT` | `4` | Max concurrent codex processes |
 | `CODEX_CLI_TIMEOUT_SECS` | `300` | Per-request timeout for codex (seconds) |
-| `EVO_GATEWAY_DB_PATH` | `gateway.db` | Path to local libSQL database for credentials |
+| `EVO_GATEWAY_DB_PATH` | `gateway.db` | Path to local libSQL database for credentials (cursor, claude-code, codex-cli) |
 | `RUST_LOG` | `info` | Log level filter |
 | `EVO_LOG_DIR` | `./logs` | Structured log output directory |
 | `EVO_OTLP_ENDPOINT` | `http://localhost:3300` | OTLP HTTP endpoint for distributed tracing (evo-king) |
+
+> **Note:** The `codex-auth` provider always stores its token in `~/.evo-gateway/gateway.db`, independent of `EVO_GATEWAY_DB_PATH`, so the auth command and running server always share the same credentials.
 
 ---
 
