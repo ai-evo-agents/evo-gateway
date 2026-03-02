@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "evo-common"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "opentelemetry",
@@ -659,11 +659,12 @@ dependencies = [
 
 [[package]]
 name = "evo-gateway"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-stream",
  "axum 0.7.9",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "dirs",

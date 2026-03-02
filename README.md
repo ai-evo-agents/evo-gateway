@@ -119,13 +119,25 @@ This runs `cursor-agent login`, then saves the auth status to a local database (
 
 ### Codex Auth (OpenAI Responses API)
 
-The `codex-auth` provider calls the OpenAI Responses API directly with a bearer token, supporting both SSE and WebSocket transports (WebSocket primary, SSE fallback). Authenticate with your OpenAI API key or OAuth access token:
+The `codex-auth` provider calls the OpenAI Responses API directly with a bearer token, supporting both SSE and WebSocket transports (WebSocket primary, SSE fallback).
+
+**Browser OAuth flow (recommended):**
 
 ```bash
-# Interactive — prompts for token
+# Opens browser for OpenAI OAuth login, receives token via local callback
 evo-gateway auth codex-auth
+```
 
-# Non-interactive
+This launches a full OAuth2 Authorization Code + PKCE flow:
+1. Opens your browser to the OpenAI authorization page
+2. Starts a local listener on `http://127.0.0.1:1455` for the callback
+3. After you authenticate, OpenAI redirects back with an authorization code
+4. The code is exchanged for an access token and account ID is extracted from the JWT
+
+**Non-interactive (API key or pre-obtained token):**
+
+```bash
+# Direct token
 evo-gateway auth codex-auth --token sk-your-openai-key
 
 # With optional ChatGPT account ID
@@ -349,6 +361,7 @@ evo-gateway/
     codex_cli.rs          # Codex CLI provider — codex CLI integration (chat + streaming + PTY model discovery)
     db.rs                 # Local libSQL database for credential storage (cursor/codex-auth)
     codex_auth.rs         # Codex Auth provider — OpenAI Responses API (SSE + WebSocket, OAuth token)
+    oauth.rs              # OAuth2 PKCE browser flow for OpenAI authentication
     routes/
       mod.rs              # Route registry
       openai.rs           # POST /v1/chat/completions, /v1/embeddings, GET /v1/models, GET /v1/models/:provider

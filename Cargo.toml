@@ -45,3 +45,4 @@ socketioxide = "0.14"
 dirs = "6"
 tokio-tungstenite = { version = "0.26", features = ["native-tls-vendored"] }
 futures-util = { version = "0.3", features = ["sink"] }
+base64 = "0.22"

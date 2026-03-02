@@ -7,6 +7,7 @@ mod db;
 mod error;
 mod health;
 mod middleware;
+mod oauth;
 mod reliability;
 mod routes;
 mod service;
@@ -427,64 +428,29 @@ async fn run_codex_auth() -> Result<()> {
 
 /// Interactive authentication flow for OpenAI Codex Responses API.
 ///
-/// Accepts optional pre-supplied `token` / `account_id` (from `--token` / `--account-id`
-/// flags) to allow non-interactive use. Falls back to interactive stdin prompts.
+/// When `--token` is provided, uses the non-interactive fast path.
+/// When no `--token` is given, launches the OAuth PKCE browser flow to obtain
+/// an access token from OpenAI.
 ///
-/// Stores credentials in the gateway database. The DB path is resolved the same way
-/// the server resolves it: `EVO_GATEWAY_DB_PATH` env or `gateway.db` relative to CWD.
+/// Stores credentials in `$HOME/.evo-gateway/gateway.db`.
 async fn run_codex_auth_flow(
     cli_token: Option<String>,
     cli_account_id: Option<String>,
 ) -> Result<()> {
-    use std::io::{self, BufRead, Write};
-
     println!("OpenAI Codex Responses API Authentication");
     println!("==========================================\n");
 
-    // ── Token ──────────────────────────────────────────────────────────────
-    // Track whether we're running non-interactively (--token flag supplied).
-    let non_interactive = cli_token.is_some();
-
-    let token = if let Some(t) = cli_token {
-        // Non-interactive: token supplied via --token flag
-        t
+    // ── Fast path: --token flag supplied ──────────────────────────────────
+    let (token, account_id) = if let Some(t) = cli_token {
+        let account_id = cli_account_id.and_then(|id| if id.is_empty() { None } else { Some(id) });
+        (t, account_id)
     } else {
-        println!("Paste your OpenAI API key or access token below.");
-        println!("(This will be stored in ~/.evo-gateway/gateway.db)");
-        println!("Tip: you can also run non-interactively with --token <TOKEN>\n");
-
-        print!("Access token: ");
-        io::stdout().flush()?;
-        let stdin = io::stdin();
-        let mut line = String::new();
-        stdin.lock().read_line(&mut line)?;
-        let t = line.trim().to_string();
-        if t.is_empty() {
-            anyhow::bail!("No token provided. Aborting.");
-        }
-        t
+        // ── OAuth browser flow ───────────────────────────────────────────
+        let result = oauth::run_oauth_browser_flow().await?;
+        (result.access_token, result.account_id)
     };
 
-    // ── Account ID ─────────────────────────────────────────────────────────
-    // When --token was given without --account-id, skip the prompt (default None).
-    let account_id = if let Some(id) = cli_account_id {
-        if id.is_empty() { None } else { Some(id) }
-    } else if non_interactive {
-        None
-    } else {
-        print!("Account ID (optional, press Enter to skip): ");
-        io::stdout().flush()?;
-        let stdin = io::stdin();
-        let mut line = String::new();
-        stdin.lock().read_line(&mut line)?;
-        let trimmed = line.trim().to_string();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
-        }
-    };
-
+    // ── Save to DB ───────────────────────────────────────────────────────
     // Always store in $HOME/.evo-gateway/gateway.db so auth command and
     // running server agree on the same file regardless of working directory.
     let db_path = crate::db::codex_auth_db_path();
