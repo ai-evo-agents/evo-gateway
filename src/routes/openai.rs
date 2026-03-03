@@ -203,6 +203,26 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<Valu
             model_ids = cached;
         }
 
+        // For CodexAuth providers, try WHAM API discovery (OAuth tokens only)
+        if model_ids.is_empty() && *provider_type == ProviderType::CodexAuth {
+            if let Some(cached) = state
+                .get_cached_models(provider_name, std::time::Duration::from_secs(3600))
+                .await
+            {
+                model_ids = cached;
+            } else if let Ok((discovered, meta_map, transport_map)) =
+                crate::codex_auth::discover_codex_auth_models(pool, &state.http_client).await
+                && !discovered.is_empty()
+            {
+                state
+                    .set_cached_models(provider_name, discovered.clone())
+                    .await;
+                state.set_model_transports(transport_map).await;
+                state.set_codex_auth_metadata(meta_map).await;
+                model_ids = discovered;
+            }
+        }
+
         // If still empty, add a "default" fallback
         if model_ids.is_empty() {
             model_ids.push("default".to_string());
@@ -218,10 +238,24 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<Valu
                 "provider": provider_name,
                 "provider_type": type_str,
             });
-            // Merge rich metadata when available
-            if let Some(ref metadata_map) = pool.config.model_metadata
-                && let Some(meta) = metadata_map.get(model_id.as_str())
-            {
+            // Merge rich metadata when available (config-level first, then WHAM discovery)
+            let meta = pool
+                .config
+                .model_metadata
+                .as_ref()
+                .and_then(|m| m.get(model_id.as_str()).cloned())
+                .or_else(|| {
+                    // Fall back to WHAM-discovered metadata (stored in state)
+                    // We already hold the metadata in state.codex_auth_model_metadata
+                    // but we can't await inside this closure, so we check synchronously
+                    // via a try_read.
+                    state
+                        .codex_auth_model_metadata
+                        .try_read()
+                        .ok()
+                        .and_then(|guard| guard.get(model_id.as_str()).cloned())
+                });
+            if let Some(meta) = meta {
                 if let Some(cw) = meta.context_window {
                     entry["context_window"] = json!(cw);
                 }
@@ -287,6 +321,24 @@ pub async fn list_provider_models(
         model_ids = cached;
     }
 
+    // For CodexAuth providers, try WHAM API discovery
+    if model_ids.is_empty() && *provider_type == ProviderType::CodexAuth {
+        if let Some(cached) = state
+            .get_cached_models(&provider, std::time::Duration::from_secs(3600))
+            .await
+        {
+            model_ids = cached;
+        } else if let Ok((discovered, meta_map, transport_map)) =
+            crate::codex_auth::discover_codex_auth_models(&pool, &state.http_client).await
+            && !discovered.is_empty()
+        {
+            state.set_cached_models(&provider, discovered.clone()).await;
+            state.set_model_transports(transport_map).await;
+            state.set_codex_auth_metadata(meta_map).await;
+            model_ids = discovered;
+        }
+    }
+
     if model_ids.is_empty() {
         model_ids.push("default".to_string());
     }
@@ -303,9 +355,19 @@ pub async fn list_provider_models(
                 "provider": &provider,
                 "provider_type": type_str,
             });
-            if let Some(ref metadata_map) = pool.config.model_metadata
-                && let Some(meta) = metadata_map.get(model_id.as_str())
-            {
+            let meta = pool
+                .config
+                .model_metadata
+                .as_ref()
+                .and_then(|m| m.get(model_id.as_str()).cloned())
+                .or_else(|| {
+                    state
+                        .codex_auth_model_metadata
+                        .try_read()
+                        .ok()
+                        .and_then(|guard| guard.get(model_id.as_str()).cloned())
+                });
+            if let Some(meta) = meta {
                 if let Some(cw) = meta.context_window {
                     entry["context_window"] = json!(cw);
                 }
@@ -345,9 +407,10 @@ pub async fn refresh_models(
     // Step 1: Clear all cached model data
     state.clear_all_cached_models().await;
 
-    // Step 2: Kick off CLI provider re-discovery in background (PTY discovery can take 10-15s)
+    // Step 2: Kick off provider re-discovery in background
     let pools = state.all_enabled_pools().await;
     for pool in &pools {
+        // CodexCli: PTY discovery (can take 10-15s)
         if *pool.provider_type() == ProviderType::CodexCli && pool.config.models.is_empty() {
             let state2 = Arc::clone(&state);
             let provider_name = pool.name().to_string();
@@ -366,6 +429,34 @@ pub async fn refresh_models(
                             provider = %provider_name,
                             error = %e,
                             "background CLI model re-discovery failed"
+                        );
+                    }
+                }
+            });
+        }
+        // CodexAuth: WHAM API discovery
+        if *pool.provider_type() == ProviderType::CodexAuth && pool.config.models.is_empty() {
+            let state2 = Arc::clone(&state);
+            let pool2 = Arc::clone(pool);
+            tokio::spawn(async move {
+                match crate::codex_auth::discover_codex_auth_models(&pool2, &state2.http_client)
+                    .await
+                {
+                    Ok((models, meta_map, transport_map)) => {
+                        tracing::info!(
+                            provider = %pool2.name(),
+                            count = models.len(),
+                            "background re-discovered codex-auth models via WHAM"
+                        );
+                        state2.set_cached_models(pool2.name(), models).await;
+                        state2.set_model_transports(transport_map).await;
+                        state2.set_codex_auth_metadata(meta_map).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            provider = %pool2.name(),
+                            error = %e,
+                            "background WHAM model re-discovery failed"
                         );
                     }
                 }

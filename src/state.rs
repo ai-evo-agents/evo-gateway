@@ -2,7 +2,7 @@ use crate::error::GatewayError;
 use crate::github_copilot::CopilotAuth;
 use crate::tmux::TmuxManager;
 use evo_common::config::{
-    GatewayConfig, ProviderConfig, ProviderType, ReliabilityConfig, RoutingConfig,
+    GatewayConfig, ModelMetadata, ProviderConfig, ProviderType, ReliabilityConfig, RoutingConfig,
 };
 use reqwest::Client;
 use socketioxide::SocketIo;
@@ -96,6 +96,12 @@ pub struct AppState {
     pub routing: Option<RoutingConfig>,
     /// GitHub Copilot token manager (initialized when a GithubCopilot provider exists).
     pub copilot_auth: Option<Arc<CopilotAuth>>,
+    /// Per-model WebSocket preference from WHAM discovery.
+    /// Key: model slug (e.g. "gpt-5.3-codex"), Value: prefer_websockets flag.
+    pub codex_auth_transport: Arc<RwLock<HashMap<String, bool>>>,
+    /// WHAM-discovered model metadata (context_window, reasoning, etc.).
+    /// Key: model slug, Value: metadata.
+    pub codex_auth_model_metadata: Arc<RwLock<HashMap<String, ModelMetadata>>>,
 }
 
 impl AppState {
@@ -126,6 +132,8 @@ impl AppState {
             reliability: config.reliability,
             routing: config.routing,
             copilot_auth,
+            codex_auth_transport: Arc::new(RwLock::new(HashMap::new())),
+            codex_auth_model_metadata: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -205,6 +213,31 @@ impl AppState {
     pub async fn clear_all_cached_models(&self) {
         let mut cache = self.cli_models_cache.write().await;
         cache.clear();
+    }
+
+    /// Get WHAM transport preference for a codex-auth model.
+    pub async fn get_model_transport(&self, model: &str) -> Option<bool> {
+        self.codex_auth_transport.read().await.get(model).copied()
+    }
+
+    /// Store WHAM transport preferences for codex-auth models.
+    pub async fn set_model_transports(&self, map: HashMap<String, bool>) {
+        *self.codex_auth_transport.write().await = map;
+    }
+
+    /// Get WHAM-discovered metadata for a codex-auth model.
+    #[allow(dead_code)]
+    pub async fn get_codex_auth_metadata(&self, model: &str) -> Option<ModelMetadata> {
+        self.codex_auth_model_metadata
+            .read()
+            .await
+            .get(model)
+            .cloned()
+    }
+
+    /// Store WHAM-discovered model metadata.
+    pub async fn set_codex_auth_metadata(&self, map: HashMap<String, ModelMetadata>) {
+        *self.codex_auth_model_metadata.write().await = map;
     }
 }
 

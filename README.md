@@ -308,7 +308,7 @@ The gateway reads `gateway.json` at startup (auto-generated with defaults if mis
       "enabled": false,
       "provider_type": "codex_auth",
       "extra_headers": {},
-      "models": ["codex-mini-latest", "gpt-4.1", "gpt-4.1-mini", "o3", "o4-mini"]
+      "models": []
     }
   ]
 }
@@ -368,6 +368,7 @@ The `/v1/models` endpoint aggregates models from all enabled providers:
 - **OpenAI-compatible providers** — fetches from upstream `{base_url}/models` if no models are declared in config
 - **Ollama providers** — uses native `/api/tags` for model listing + `/api/show` for context window per model (cached 1 hour)
 - **CLI providers (Codex CLI)** — discovers models dynamically via PTY-based introspection (see below)
+- **Codex Auth providers** — auto-discovers models via WHAM API (`chatgpt.com/backend-api/codex/models`) when using a ChatGPT OAuth token and no models are declared in config. Returns metadata including `context_window`, `reasoning`, and per-model `prefer_websockets` transport preference (cached 1 hour). API-key mode falls back to standard OpenAI `/v1/models`.
 - **Google Gemini** — returns configured models list with metadata
 - **GitHub Copilot** — returns configured models list
 - **Other providers** — returns configured models or a `"default"` entry
@@ -486,7 +487,7 @@ cargo clippy -- -D warnings
 | `CODEX_CLI_MAX_CONCURRENT` | `4` | Max concurrent codex processes |
 | `CODEX_CLI_TIMEOUT_SECS` | `300` | Per-request timeout for codex (seconds) |
 | `EVO_GATEWAY_DB_PATH` | `gateway.db` | Path to local libSQL database for credentials (cursor, claude-code, codex-cli) |
-| `EVO_CODEX_AUTH_TRANSPORT` | `auto` | Codex Auth transport: `websocket`, `sse`, or `auto` (tries WS first, falls back to SSE) |
+| `EVO_CODEX_AUTH_TRANSPORT` | `auto` | Codex Auth transport fallback: `websocket`, `sse`, or `auto`. Per-model `prefer_websockets` from WHAM discovery takes priority over this setting when available. |
 | `EVO_CODEX_AUTH_REASONING_EFFORT` | `high` | Default reasoning effort for Codex Responses API (`low`, `medium`, `high`, `xhigh`) |
 | `RUST_LOG` | `info` | Log level filter |
 | `EVO_LOG_DIR` | `./logs` | Structured log output directory |

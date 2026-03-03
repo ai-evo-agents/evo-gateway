@@ -429,6 +429,117 @@ async fn resolve_bearer_token(
     ))
 }
 
+// ─── WHAM model discovery ───────────────────────────────────────────────────
+
+/// WHAM models API response shape.
+#[derive(Debug, Deserialize)]
+struct WhamModelsResponse {
+    models: Vec<WhamModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WhamModel {
+    slug: String,
+    #[serde(default)]
+    prefer_websockets: bool,
+    #[serde(default)]
+    context_window: Option<u32>,
+    #[serde(default)]
+    supported_reasoning_levels: Option<Vec<String>>,
+    #[serde(default)]
+    supported_output_types: Option<Vec<String>>,
+}
+
+/// Discover codex-auth models from the WHAM models API.
+///
+/// Only works with OAuth tokens (account_id present). For API-key mode, returns
+/// empty results so the caller can fall back to standard `/v1/models` discovery.
+///
+/// Returns `(model_slugs, metadata_map, transport_map)`.
+pub async fn discover_codex_auth_models(
+    pool: &ProviderPool,
+    client: &reqwest::Client,
+) -> Result<
+    (
+        Vec<String>,
+        std::collections::HashMap<String, evo_common::config::ModelMetadata>,
+        std::collections::HashMap<String, bool>,
+    ),
+    GatewayError,
+> {
+    use evo_common::config::ModelMetadata;
+    use std::collections::HashMap;
+
+    let (token, account_id) = resolve_bearer_token(pool).await?;
+
+    // Only WHAM endpoint is available for OAuth tokens; API keys use standard /v1/models
+    let account_id = match account_id {
+        Some(id) => id,
+        None => return Ok((vec![], HashMap::new(), HashMap::new())),
+    };
+
+    let url = "https://chatgpt.com/backend-api/codex/models?client_version=0.107.0";
+
+    let resp = tokio::time::timeout(Duration::from_secs(10), async {
+        client
+            .get(url)
+            .bearer_auth(&token)
+            .header("chatgpt-account-id", &account_id)
+            .header("user-agent", "codex-cli/0.1.0-evo (macOS; aarch64)")
+            .send()
+            .await
+    })
+    .await
+    .map_err(|_| GatewayError::UpstreamError("WHAM models API fetch timed out".into()))?
+    .map_err(|e| GatewayError::UpstreamError(format!("WHAM models API request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(GatewayError::UpstreamError(format!(
+            "WHAM models API returned {status}: {text}"
+        )));
+    }
+
+    let wham: WhamModelsResponse = resp
+        .json()
+        .await
+        .map_err(|e| GatewayError::UpstreamError(format!("WHAM models API parse error: {e}")))?;
+
+    let mut model_ids = Vec::new();
+    let mut metadata = HashMap::new();
+    let mut transport = HashMap::new();
+
+    for m in wham.models {
+        model_ids.push(m.slug.clone());
+        transport.insert(m.slug.clone(), m.prefer_websockets);
+
+        let has_reasoning = m
+            .supported_reasoning_levels
+            .as_ref()
+            .is_some_and(|levels| levels.iter().any(|l| l != "none"));
+
+        metadata.insert(
+            m.slug.clone(),
+            ModelMetadata {
+                context_window: m.context_window,
+                max_tokens: None,
+                reasoning: if has_reasoning { Some(true) } else { None },
+                input_types: m.supported_output_types,
+                cost: None,
+            },
+        );
+    }
+
+    tracing::info!(
+        count = model_ids.len(),
+        models = ?model_ids,
+        "discovered codex-auth models from WHAM API"
+    );
+
+    Ok((model_ids, metadata, transport))
+}
+
 // ─── Responses URL building ─────────────────────────────────────────────────
 
 /// Build the responses endpoint URL from the provider's base_url.
@@ -838,7 +949,11 @@ fn build_request(body: &Value, model: &str) -> ResponsesRequest {
 }
 
 /// Send a request using the configured transport (auto, ws, sse).
+///
+/// Per-model transport preference from WHAM discovery takes priority over the
+/// global `EVO_CODEX_AUTH_TRANSPORT` env var.
 async fn send_request(
+    state: &AppState,
     client: &reqwest::Client,
     responses_url: &str,
     request: &ResponsesRequest,
@@ -846,7 +961,15 @@ async fn send_request(
     bearer_token: &str,
     account_id: Option<&str>,
 ) -> Result<String, GatewayError> {
-    let transport = resolve_transport();
+    let transport = if let Some(prefers_ws) = state.get_model_transport(model).await {
+        if prefers_ws {
+            CodexTransport::WebSocket
+        } else {
+            CodexTransport::Sse
+        }
+    } else {
+        resolve_transport()
+    };
 
     match transport {
         CodexTransport::WebSocket => {
@@ -897,6 +1020,7 @@ pub async fn codex_auth_chat(
     let request_id = uuid::Uuid::new_v4().to_string();
 
     let text = send_request(
+        state,
         &state.http_client,
         &responses_url,
         &request,
@@ -930,7 +1054,15 @@ pub async fn codex_auth_chat_streaming(
     request.stream = true;
     let request_id = uuid::Uuid::new_v4().to_string();
 
-    let transport = resolve_transport();
+    let transport = if let Some(prefers_ws) = state.get_model_transport(model).await {
+        if prefers_ws {
+            CodexTransport::WebSocket
+        } else {
+            CodexTransport::Sse
+        }
+    } else {
+        resolve_transport()
+    };
 
     // For streaming, we prefer SSE since we can pipe the stream directly.
     // WebSocket streaming would require a different approach.
