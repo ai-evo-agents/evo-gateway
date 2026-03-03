@@ -405,11 +405,17 @@ fn parse_sse_body(body: &str) -> Result<Option<String>, GatewayError> {
 
 // ─── Token resolution ───────────────────────────────────────────────────────
 
-/// Resolve bearer token: try DB-stored OAuth token first, then api_key_envs.
+/// Resolve bearer token: api_key_envs (e.g. OPENAI_API_KEY) takes priority;
+/// DB-stored OAuth token is used as a fallback when no env key is set.
 async fn resolve_bearer_token(
     pool: &ProviderPool,
 ) -> Result<(String, Option<String>), GatewayError> {
-    // Try DB-stored OAuth token (always from $HOME/.evo-gateway/gateway.db)
+    // api_key_envs first — lets OPENAI_API_KEY override the OAuth DB token
+    if let Some(token) = pool.token_pool.next_token() {
+        return Ok((token.to_string(), None));
+    }
+
+    // Fall back to DB-stored OAuth token (from $HOME/.evo-gateway/gateway.db)
     if let Ok(db) = crate::db::init_codex_auth_db().await
         && let Ok(conn) = db.connect()
         && let Ok(Some((token, account_id))) = crate::db::get_codex_auth_token(&conn).await
@@ -417,13 +423,8 @@ async fn resolve_bearer_token(
         return Ok((token, account_id));
     }
 
-    // Fall back to api_key_envs
-    if let Some(token) = pool.token_pool.next_token() {
-        return Ok((token.to_string(), None));
-    }
-
     Err(GatewayError::ConfigError(
-        "No codex-auth token available. Run `evo-gateway auth codex-auth` or set api_key_envs."
+        "No codex-auth token available. Set OPENAI_API_KEY in api_key_envs or run `evo-gateway auth codex-auth`."
             .into(),
     ))
 }
@@ -640,6 +641,8 @@ async fn send_ws_request(
     account_id: Option<&str>,
 ) -> Result<String, WsRequestError> {
     let ws_url = build_ws_url(responses_url, model)?;
+    tracing::debug!(url = %ws_url, "connecting via WebSocket");
+    let ws_url_for_log = ws_url.clone();
 
     let mut ws_request = ws_url.into_client_request().map_err(|e| {
         WsRequestError::TransportUnavailable(format!("invalid WebSocket request URL: {e}"))
@@ -686,7 +689,17 @@ async fn send_ws_request(
             ))
         })?
         .map_err(|e| {
-            WsRequestError::TransportUnavailable(format!("WebSocket connect failed: {e}"))
+            // Log the HTTP response body if the server returned an error
+            let detail = match &e {
+                tokio_tungstenite::tungstenite::Error::Http(resp) => {
+                    let body_bytes = resp.body().as_deref().unwrap_or(&[]);
+                    let body_str = std::str::from_utf8(body_bytes).unwrap_or("<binary>");
+                    format!("HTTP error: {} — body: {}", resp.status(), body_str)
+                }
+                other => other.to_string(),
+            };
+            tracing::warn!(url = %ws_url_for_log, error = %detail, "WebSocket connect failed");
+            WsRequestError::TransportUnavailable(format!("WebSocket connect failed: {detail}"))
         })?;
 
     // Send payload

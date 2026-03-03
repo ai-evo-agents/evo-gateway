@@ -84,6 +84,9 @@ enum AuthCommands {
         /// ChatGPT account ID to send with requests (optional)
         #[arg(long)]
         account_id: Option<String>,
+        /// Re-authenticate even if a token already exists
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -103,9 +106,11 @@ async fn main() -> Result<()> {
                 AuthCommands::Cursor => run_cursor_auth().await,
                 AuthCommands::Claude => run_claude_auth().await,
                 AuthCommands::Codex => run_codex_auth().await,
-                AuthCommands::CodexAuth { token, account_id } => {
-                    run_codex_auth_flow(token, account_id).await
-                }
+                AuthCommands::CodexAuth {
+                    token,
+                    account_id,
+                    force,
+                } => run_codex_auth_flow(token, account_id, force).await,
             };
         }
         Some(Commands::Service { action }) => {
@@ -447,9 +452,34 @@ async fn run_codex_auth() -> Result<()> {
 async fn run_codex_auth_flow(
     cli_token: Option<String>,
     cli_account_id: Option<String>,
+    force: bool,
 ) -> Result<()> {
     println!("OpenAI Codex Responses API Authentication");
     println!("==========================================\n");
+
+    // ── Check for existing credentials (skip browser flow unless --force) ──
+    if !force
+        && cli_token.is_none()
+        && let Ok(db) = crate::db::init_codex_auth_db().await
+        && let Ok(conn) = db.connect()
+        && let Ok(Some((existing_token, account_id))) = crate::db::get_codex_auth_token(&conn).await
+    {
+        println!("Already authenticated.");
+        println!(
+            "  Token: {}...{}",
+            &existing_token[..8.min(existing_token.len())],
+            if existing_token.len() > 12 {
+                &existing_token[existing_token.len() - 4..]
+            } else {
+                ""
+            }
+        );
+        if let Some(ref id) = account_id {
+            println!("  Account ID: {id}");
+        }
+        println!("\nUse --force to re-authenticate.");
+        return Ok(());
+    }
 
     // ── Fast path: --token flag supplied ──────────────────────────────────
     let (token, account_id) = if let Some(t) = cli_token {

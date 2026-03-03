@@ -200,6 +200,12 @@ impl AppState {
         let mut cache = self.cli_models_cache.write().await;
         cache.insert(provider.to_string(), (Instant::now(), models));
     }
+
+    /// Clear all cached model discovery data, forcing re-fetch on next request.
+    pub async fn clear_all_cached_models(&self) {
+        let mut cache = self.cli_models_cache.write().await;
+        cache.clear();
+    }
 }
 
 fn build_pools(providers: Vec<ProviderConfig>) -> HashMap<String, Arc<ProviderPool>> {

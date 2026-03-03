@@ -128,11 +128,17 @@ This runs `cursor-agent login`, then saves the auth status to a local database (
 
 The `codex-auth` provider calls the OpenAI Responses API directly with a bearer token, supporting both SSE and WebSocket transports (WebSocket primary, SSE fallback).
 
-**Browser OAuth flow (recommended):**
+**Token resolution priority:** `OPENAI_API_KEY` (via `api_key_envs`) is checked first; the DB OAuth token is used only as a fallback. Set `OPENAI_API_KEY` in the environment for a standard API key setup.
+
+**Browser OAuth flow:**
 
 ```bash
 # Opens browser for OpenAI OAuth login, receives token via local callback
 evo-gateway auth codex-auth
+
+# Skip if already authenticated
+evo-gateway auth codex-auth          # prints existing token and exits
+evo-gateway auth codex-auth --force  # re-authenticate even if token exists
 ```
 
 This launches a full OAuth2 Authorization Code + PKCE flow:
@@ -144,14 +150,14 @@ This launches a full OAuth2 Authorization Code + PKCE flow:
 **Non-interactive (API key or pre-obtained token):**
 
 ```bash
-# Direct token
+# Direct token (stored in DB, used as fallback when OPENAI_API_KEY is not set)
 evo-gateway auth codex-auth --token sk-your-openai-key
 
 # With optional ChatGPT account ID
 evo-gateway auth codex-auth --token sk-... --account-id org-xyz
 ```
 
-The token is stored in `~/.evo-gateway/gateway.db` regardless of working directory, so both the auth command and the running server always agree on the same credentials. Alternatively, set the `OPENAI_API_KEY` environment variable as a fallback.
+The OAuth token is stored in `~/.evo-gateway/gateway.db`. When `OPENAI_API_KEY` is set in the environment and listed in the provider's `api_key_envs`, it takes priority over the stored OAuth token.
 
 ### Sending Authenticated Requests
 
@@ -327,6 +333,7 @@ Multiple `api_key_envs` entries enable token rotation (round-robin, lock-free wi
 | `POST` | `/v1/messages` | Anthropic native Messages API (streaming supported) |
 | `POST` | `/v1/embeddings` | Embeddings endpoint |
 | `GET` | `/v1/models` | List all available models across enabled providers (`provider:model` format) |
+| `POST` | `/v1/models/refresh` | Invalidate model discovery cache and re-discover from all providers |
 | `GET` | `/v1/models/:provider` | List models for a specific provider |
 | `POST` | `/api/generate` | Local LLM generate (Ollama-compatible) |
 | `POST` | `/api/chat` | Local LLM chat (Ollama-compatible) |
@@ -377,6 +384,8 @@ The discovery process:
 5. Cleans up: dismisses the menu with Escape and kills the process
 
 Discovered models are cached in `AppState` with a **1-hour TTL**. The `/v1/models` and `/v1/models/codex-cli` endpoints serve from this cache. Discovery runs in a background task after server startup so it does not block request handling.
+
+To force immediate re-discovery (e.g., after adding a new Ollama model or updating Codex CLI), call `POST /v1/models/refresh`. This clears the cache and kicks off background re-discovery for CLI providers, returning the current model list immediately.
 
 ---
 
@@ -475,6 +484,8 @@ cargo clippy -- -D warnings
 | `CODEX_CLI_MAX_CONCURRENT` | `4` | Max concurrent codex processes |
 | `CODEX_CLI_TIMEOUT_SECS` | `300` | Per-request timeout for codex (seconds) |
 | `EVO_GATEWAY_DB_PATH` | `gateway.db` | Path to local libSQL database for credentials (cursor, claude-code, codex-cli) |
+| `EVO_CODEX_AUTH_TRANSPORT` | `auto` | Codex Auth transport: `websocket`, `sse`, or `auto` (tries WS first, falls back to SSE) |
+| `EVO_CODEX_AUTH_REASONING_EFFORT` | `high` | Default reasoning effort for Codex Responses API (`low`, `medium`, `high`, `xhigh`) |
 | `RUST_LOG` | `info` | Log level filter |
 | `EVO_LOG_DIR` | `./logs` | Structured log output directory |
 | `EVO_OTLP_ENDPOINT` | `http://localhost:3300` | OTLP HTTP endpoint for distributed tracing (evo-king) |

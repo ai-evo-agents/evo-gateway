@@ -23,7 +23,7 @@ const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
 const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
-const SCOPES: &str = "openid profile email offline_access";
+const SCOPES: &str = "openid profile email offline_access api";
 const CALLBACK_PORT: u16 = 1455;
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(120);
 

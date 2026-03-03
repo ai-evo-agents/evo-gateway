@@ -332,6 +332,51 @@ pub async fn list_provider_models(
     })))
 }
 
+/// POST /v1/models/refresh — invalidate model discovery cache and re-discover.
+///
+/// Clears cached model lists (Ollama /api/tags, CLI PTY discovery) so the
+/// subsequent list_models call fetches fresh data from all providers.
+#[instrument(skip(state))]
+pub async fn refresh_models(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Value>, GatewayError> {
+    tracing::info!("model cache invalidation requested");
+
+    // Step 1: Clear all cached model data
+    state.clear_all_cached_models().await;
+
+    // Step 2: Kick off CLI provider re-discovery in background (PTY discovery can take 10-15s)
+    let pools = state.all_enabled_pools().await;
+    for pool in &pools {
+        if *pool.provider_type() == ProviderType::CodexCli && pool.config.models.is_empty() {
+            let state2 = Arc::clone(&state);
+            let provider_name = pool.name().to_string();
+            tokio::spawn(async move {
+                match crate::codex_cli::discover_codex_models().await {
+                    Ok(models) => {
+                        tracing::info!(
+                            provider = %provider_name,
+                            count = models.len(),
+                            "background re-discovered codex-cli models"
+                        );
+                        state2.set_cached_models(&provider_name, models).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            provider = %provider_name,
+                            error = %e,
+                            "background CLI model re-discovery failed"
+                        );
+                    }
+                }
+            });
+        }
+    }
+
+    // Step 3: Return current model list immediately (CLI re-discovery running in background)
+    list_models(State(state)).await
+}
+
 /// Map ProviderType enum to its serialized string name for JSON responses.
 fn provider_type_str(pt: &ProviderType) -> &'static str {
     match pt {
