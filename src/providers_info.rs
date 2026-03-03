@@ -56,7 +56,7 @@ fn print_provider_list() {
         (
             "codex_auth",
             "Codex Auth",
-            "OAuth/bearer token (evo-gateway auth codex-auth)",
+            "OAuth flow (evo-gateway auth codex-auth)",
         ),
         ("google", "Google Gemini", "API key (env var)"),
         ("github_copilot", "GitHub Copilot", "GitHub token (env var)"),
@@ -71,7 +71,7 @@ fn print_provider_list() {
     }
     println!();
     println!("Use `evo-gateway providers info <TYPE>` for detailed setup instructions.");
-    println!("Common aliases also work: openai, claude, codex, gemini, copilot.");
+    println!("Common aliases: openai, claude, codex, codex-auth, gemini, copilot.");
 }
 
 // ── Provider info dispatcher ─────────────────────────────────────────────────
