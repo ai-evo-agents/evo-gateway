@@ -876,7 +876,14 @@ pub async fn codex_auth_chat(
     model: &str,
 ) -> Result<Response, GatewayError> {
     let (bearer_token, account_id) = resolve_bearer_token(pool).await?;
-    let responses_url = build_responses_url(&pool.config.base_url);
+    // OAuth tokens (chatgpt mode) must go to chatgpt.com/backend-api —
+    // they lack the api.responses.write scope required by api.openai.com.
+    let effective_base_url = if account_id.is_some() {
+        "https://chatgpt.com/backend-api".to_string()
+    } else {
+        pool.config.base_url.clone()
+    };
+    let responses_url = build_responses_url(&effective_base_url);
     let request = build_request(&body, model);
     let request_id = uuid::Uuid::new_v4().to_string();
 
@@ -904,7 +911,12 @@ pub async fn codex_auth_chat_streaming(
     model: &str,
 ) -> Result<Response, GatewayError> {
     let (bearer_token, account_id) = resolve_bearer_token(pool).await?;
-    let responses_url = build_responses_url(&pool.config.base_url);
+    let effective_base_url = if account_id.is_some() {
+        "https://chatgpt.com/backend-api".to_string()
+    } else {
+        pool.config.base_url.clone()
+    };
+    let responses_url = build_responses_url(&effective_base_url);
     let mut request = build_request(&body, model);
     request.stream = true;
     let request_id = uuid::Uuid::new_v4().to_string();

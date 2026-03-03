@@ -128,6 +128,8 @@ This runs `cursor-agent login`, then saves the auth status to a local database (
 
 The `codex-auth` provider calls the OpenAI Responses API directly with a bearer token, supporting both SSE and WebSocket transports (WebSocket primary, SSE fallback).
 
+**Endpoint routing:** When using a ChatGPT OAuth token (from `evo-gateway auth codex-auth`), requests are automatically routed to `chatgpt.com/backend-api/responses` — the same WHAM endpoint used by the Codex CLI in chatgpt auth mode. This endpoint accepts OAuth tokens without requiring the `api.responses.write` scope. When using an API key (`OPENAI_API_KEY`), requests go to `api.openai.com/v1/responses` as usual.
+
 **Token resolution priority:** `OPENAI_API_KEY` (via `api_key_envs`) is checked first; the DB OAuth token is used only as a fallback. Set `OPENAI_API_KEY` in the environment for a standard API key setup.
 
 **Browser OAuth flow:**

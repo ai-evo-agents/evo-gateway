@@ -323,12 +323,21 @@ pub fn extract_account_id(token_response: &TokenResponse) -> Option<String> {
     let payload_bytes = URL_SAFE_NO_PAD.decode(parts[1]).ok()?;
     let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).ok()?;
 
-    // Try claim keys used by OpenAI tokens
+    // Prefer the chatgpt_account_id nested under "https://api.openai.com/auth" —
+    // this is the UUID (e.g. "20956aa4-…") that ChatGPT-Account-Id header expects.
+    if let Some(auth_obj) = payload.get("https://api.openai.com/auth")
+        && let Some(value) = auth_obj.get("chatgpt_account_id").and_then(|v| v.as_str())
+        && !value.trim().is_empty()
+    {
+        return Some(value.to_string());
+    }
+
+    // Try other flat claim keys used by OpenAI tokens (excluding sub — that's
+    // a Google OAuth sub like "google-oauth2|…", not a valid ChatGPT account ID)
     for key in [
         "account_id",
         "accountId",
         "acct",
-        "sub",
         "https://api.openai.com/account_id",
     ] {
         if let Some(value) = payload.get(key).and_then(|v| v.as_str())
@@ -449,8 +458,10 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_account_id_fallback_to_sub() {
-        let payload = serde_json::json!({"sub": "user-fallback"});
+    fn test_extract_account_id_sub_only_returns_none() {
+        // A token with only "sub" (e.g. "google-oauth2|…") should return None —
+        // the sub is not a valid ChatGPT-Account-Id.
+        let payload = serde_json::json!({"sub": "google-oauth2|100226539318258127120"});
         let payload_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
         let fake_jwt = format!("eyJ0eXAiOiJKV1QifQ.{payload_b64}.fake_sig");
 
@@ -463,9 +474,34 @@ mod tests {
             scope: None,
         };
 
+        assert_eq!(extract_account_id(&token_response), None);
+    }
+
+    #[test]
+    fn test_extract_account_id_nested_chatgpt_claim() {
+        // Real OpenAI id_token: chatgpt_account_id is nested under
+        // "https://api.openai.com/auth" → should be extracted as the UUID.
+        let payload = serde_json::json!({
+            "sub": "google-oauth2|100226539318258127120",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "20956aa4-8e81-4fa1-8d58-17baad979efc"
+            }
+        });
+        let payload_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        let fake_jwt = format!("eyJ0eXAiOiJKV1QifQ.{payload_b64}.fake_sig");
+
+        let token_response = TokenResponse {
+            access_token: "at_xxx".to_string(),
+            token_type: Some("bearer".to_string()),
+            expires_in: Some(3600),
+            refresh_token: None,
+            id_token: Some(fake_jwt),
+            scope: None,
+        };
+
         assert_eq!(
             extract_account_id(&token_response).as_deref(),
-            Some("user-fallback")
+            Some("20956aa4-8e81-4fa1-8d58-17baad979efc")
         );
     }
 
