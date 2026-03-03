@@ -437,6 +437,13 @@ struct WhamModelsResponse {
     models: Vec<WhamModel>,
 }
 
+/// A reasoning level entry returned by the WHAM API.
+/// `effort` is e.g. "low", "medium", "high"; "none" means no reasoning.
+#[derive(Debug, Deserialize)]
+struct WhamReasoningLevel {
+    effort: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct WhamModel {
     slug: String,
@@ -444,10 +451,12 @@ struct WhamModel {
     prefer_websockets: bool,
     #[serde(default)]
     context_window: Option<u32>,
+    /// Reasoning levels are objects like `{"effort": "high", "description": "..."}`.
     #[serde(default)]
-    supported_reasoning_levels: Option<Vec<String>>,
+    supported_reasoning_levels: Option<Vec<WhamReasoningLevel>>,
+    /// Input modalities: ["text", "image"] etc.
     #[serde(default)]
-    supported_output_types: Option<Vec<String>>,
+    input_modalities: Option<Vec<String>>,
 }
 
 /// Discover codex-auth models from the WHAM models API.
@@ -514,10 +523,11 @@ pub async fn discover_codex_auth_models(
         model_ids.push(m.slug.clone());
         transport.insert(m.slug.clone(), m.prefer_websockets);
 
+        // reasoning = true if any level has effort != "none"
         let has_reasoning = m
             .supported_reasoning_levels
             .as_ref()
-            .is_some_and(|levels| levels.iter().any(|l| l != "none"));
+            .is_some_and(|levels| levels.iter().any(|l| l.effort != "none"));
 
         metadata.insert(
             m.slug.clone(),
@@ -525,7 +535,7 @@ pub async fn discover_codex_auth_models(
                 context_window: m.context_window,
                 max_tokens: None,
                 reasoning: if has_reasoning { Some(true) } else { None },
-                input_types: m.supported_output_types,
+                input_types: m.input_modalities,
                 cost: None,
             },
         );

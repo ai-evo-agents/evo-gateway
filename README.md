@@ -303,8 +303,8 @@ The gateway reads `gateway.json` at startup (auto-generated with defaults if mis
     },
     {
       "name": "codex-auth",
-      "base_url": "https://api.openai.com/v1",
-      "api_key_envs": ["OPENAI_API_KEY"],
+      "base_url": "",
+      "api_key_envs": [],
       "enabled": false,
       "provider_type": "codex_auth",
       "extra_headers": {},

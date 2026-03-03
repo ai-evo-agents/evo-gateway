@@ -210,16 +210,31 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<Valu
                 .await
             {
                 model_ids = cached;
-            } else if let Ok((discovered, meta_map, transport_map)) =
-                crate::codex_auth::discover_codex_auth_models(pool, &state.http_client).await
-                && !discovered.is_empty()
-            {
-                state
-                    .set_cached_models(provider_name, discovered.clone())
-                    .await;
-                state.set_model_transports(transport_map).await;
-                state.set_codex_auth_metadata(meta_map).await;
-                model_ids = discovered;
+            } else {
+                match crate::codex_auth::discover_codex_auth_models(pool, &state.http_client).await
+                {
+                    Ok((discovered, meta_map, transport_map)) if !discovered.is_empty() => {
+                        state
+                            .set_cached_models(provider_name, discovered.clone())
+                            .await;
+                        state.set_model_transports(transport_map).await;
+                        state.set_codex_auth_metadata(meta_map).await;
+                        model_ids = discovered;
+                    }
+                    Ok(_empty) => {
+                        tracing::warn!(
+                            provider = provider_name,
+                            "WHAM API returned 0 models — check OAuth token"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            provider = provider_name,
+                            error = %e,
+                            "WHAM model discovery failed"
+                        );
+                    }
+                }
             }
         }
 
@@ -328,14 +343,28 @@ pub async fn list_provider_models(
             .await
         {
             model_ids = cached;
-        } else if let Ok((discovered, meta_map, transport_map)) =
-            crate::codex_auth::discover_codex_auth_models(&pool, &state.http_client).await
-            && !discovered.is_empty()
-        {
-            state.set_cached_models(&provider, discovered.clone()).await;
-            state.set_model_transports(transport_map).await;
-            state.set_codex_auth_metadata(meta_map).await;
-            model_ids = discovered;
+        } else {
+            match crate::codex_auth::discover_codex_auth_models(&pool, &state.http_client).await {
+                Ok((discovered, meta_map, transport_map)) if !discovered.is_empty() => {
+                    state.set_cached_models(&provider, discovered.clone()).await;
+                    state.set_model_transports(transport_map).await;
+                    state.set_codex_auth_metadata(meta_map).await;
+                    model_ids = discovered;
+                }
+                Ok(_empty) => {
+                    tracing::warn!(
+                        provider = %provider,
+                        "WHAM API returned 0 models — check OAuth token"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %provider,
+                        error = %e,
+                        "WHAM model discovery failed"
+                    );
+                }
+            }
         }
     }
 
