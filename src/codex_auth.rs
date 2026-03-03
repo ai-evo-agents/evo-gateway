@@ -648,7 +648,7 @@ async fn send_ws_request(
         WsRequestError::TransportUnavailable(format!("invalid WebSocket request URL: {e}"))
     })?;
 
-    // Set auth headers
+    // Set auth + protocol headers (mirrors codex CLI WS handshake)
     let headers = ws_request.headers_mut();
     headers.insert(
         AUTHORIZATION,
@@ -657,7 +657,16 @@ async fn send_ws_request(
         })?,
     );
     headers.insert("accept", WsHeaderValue::from_static("text/event-stream"));
-    headers.insert(USER_AGENT, WsHeaderValue::from_static("evo-gateway"));
+    // Codex-compatible user agent — plain "evo-gateway" may be rejected by WHAM
+    headers.insert(
+        USER_AGENT,
+        WsHeaderValue::from_static("codex-cli/0.1.0-evo (macOS; aarch64)"),
+    );
+    // Required beta header for WS v2 (without this the WHAM endpoint returns 500)
+    headers.insert(
+        "openai-beta",
+        WsHeaderValue::from_static("responses_websockets=2026-02-06"),
+    );
 
     if let Some(account_id) = account_id
         && let Ok(val) = WsHeaderValue::from_str(account_id)
@@ -879,7 +888,7 @@ pub async fn codex_auth_chat(
     // OAuth tokens (chatgpt mode) must go to chatgpt.com/backend-api —
     // they lack the api.responses.write scope required by api.openai.com.
     let effective_base_url = if account_id.is_some() {
-        "https://chatgpt.com/backend-api".to_string()
+        "https://chatgpt.com/backend-api/codex".to_string()
     } else {
         pool.config.base_url.clone()
     };
@@ -912,7 +921,7 @@ pub async fn codex_auth_chat_streaming(
 ) -> Result<Response, GatewayError> {
     let (bearer_token, account_id) = resolve_bearer_token(pool).await?;
     let effective_base_url = if account_id.is_some() {
-        "https://chatgpt.com/backend-api".to_string()
+        "https://chatgpt.com/backend-api/codex".to_string()
     } else {
         pool.config.base_url.clone()
     };
