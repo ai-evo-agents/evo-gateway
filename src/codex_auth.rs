@@ -464,7 +464,9 @@ struct WhamModel {
 /// Only works with OAuth tokens (account_id present). For API-key mode, returns
 /// empty results so the caller can fall back to standard `/v1/models` discovery.
 ///
-/// Returns `(model_slugs, metadata_map, transport_map)`.
+/// Returns `(model_slugs, metadata_map, transport_map, reasoning_levels_map)`.
+/// `reasoning_levels_map` maps model slug → list of supported non-"none" effort strings,
+/// e.g. `"gpt-5.1-codex-mini" → ["low", "medium", "high"]`.
 pub async fn discover_codex_auth_models(
     pool: &ProviderPool,
     client: &reqwest::Client,
@@ -473,6 +475,7 @@ pub async fn discover_codex_auth_models(
         Vec<String>,
         std::collections::HashMap<String, evo_common::config::ModelMetadata>,
         std::collections::HashMap<String, bool>,
+        std::collections::HashMap<String, Vec<String>>,
     ),
     GatewayError,
 > {
@@ -484,7 +487,7 @@ pub async fn discover_codex_auth_models(
     // Only WHAM endpoint is available for OAuth tokens; API keys use standard /v1/models
     let account_id = match account_id {
         Some(id) => id,
-        None => return Ok((vec![], HashMap::new(), HashMap::new())),
+        None => return Ok((vec![], HashMap::new(), HashMap::new(), HashMap::new())),
     };
 
     let url = "https://chatgpt.com/backend-api/codex/models?client_version=0.107.0";
@@ -518,6 +521,7 @@ pub async fn discover_codex_auth_models(
     let mut model_ids = Vec::new();
     let mut metadata = HashMap::new();
     let mut transport = HashMap::new();
+    let mut reasoning_levels: HashMap<String, Vec<String>> = HashMap::new();
 
     for m in wham.models {
         model_ids.push(m.slug.clone());
@@ -528,6 +532,22 @@ pub async fn discover_codex_auth_models(
             .supported_reasoning_levels
             .as_ref()
             .is_some_and(|levels| levels.iter().any(|l| l.effort != "none"));
+
+        // Collect the supported non-"none" effort strings for the UI selector
+        let level_strings: Vec<String> = m
+            .supported_reasoning_levels
+            .as_ref()
+            .map(|levels| {
+                levels
+                    .iter()
+                    .map(|l| l.effort.clone())
+                    .filter(|e| e != "none")
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !level_strings.is_empty() {
+            reasoning_levels.insert(m.slug.clone(), level_strings);
+        }
 
         metadata.insert(
             m.slug.clone(),
@@ -547,7 +567,7 @@ pub async fn discover_codex_auth_models(
         "discovered codex-auth models from WHAM API"
     );
 
-    Ok((model_ids, metadata, transport))
+    Ok((model_ids, metadata, transport, reasoning_levels))
 }
 
 // ─── Responses URL building ─────────────────────────────────────────────────

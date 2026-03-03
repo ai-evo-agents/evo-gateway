@@ -51,6 +51,7 @@ Client Request
                                           (routing by config / model prefix)
 
 Middleware stack (applied to API routes):
+  - CORS (permissive — allows browser clients on any origin)
   - Authentication (optional, via EVO_GATEWAY_AUTH)
   - Request logging (tracing)
 ```
@@ -368,7 +369,7 @@ The `/v1/models` endpoint aggregates models from all enabled providers:
 - **OpenAI-compatible providers** — fetches from upstream `{base_url}/models` if no models are declared in config
 - **Ollama providers** — uses native `/api/tags` for model listing + `/api/show` for context window per model (cached 1 hour)
 - **CLI providers (Codex CLI)** — discovers models dynamically via PTY-based introspection (see below)
-- **Codex Auth providers** — auto-discovers models via WHAM API (`chatgpt.com/backend-api/codex/models`) when using a ChatGPT OAuth token and no models are declared in config. Returns metadata including `context_window`, `reasoning`, and per-model `prefer_websockets` transport preference (cached 1 hour). API-key mode falls back to standard OpenAI `/v1/models`.
+- **Codex Auth providers** — auto-discovers models via WHAM API (`chatgpt.com/backend-api/codex/models`) when using a ChatGPT OAuth token and no models are declared in config. Returns metadata including `context_window`, `reasoning`, per-model `prefer_websockets` transport preference, and per-model `reasoning_levels` (e.g. `["low","medium","high","xhigh"]`) derived from WHAM's `supported_reasoning_levels` (cached 1 hour). API-key mode falls back to standard OpenAI `/v1/models`.
 - **Google Gemini** — returns configured models list with metadata
 - **GitHub Copilot** — returns configured models list
 - **Other providers** — returns configured models or a `"default"` entry

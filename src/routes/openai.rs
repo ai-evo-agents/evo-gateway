@@ -213,12 +213,15 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<Valu
             } else {
                 match crate::codex_auth::discover_codex_auth_models(pool, &state.http_client).await
                 {
-                    Ok((discovered, meta_map, transport_map)) if !discovered.is_empty() => {
+                    Ok((discovered, meta_map, transport_map, levels_map))
+                        if !discovered.is_empty() =>
+                    {
                         state
                             .set_cached_models(provider_name, discovered.clone())
                             .await;
                         state.set_model_transports(transport_map).await;
                         state.set_codex_auth_metadata(meta_map).await;
+                        state.set_model_reasoning_levels(levels_map).await;
                         model_ids = discovered;
                     }
                     Ok(_empty) => {
@@ -287,6 +290,13 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<Valu
                     entry["cost"] = json!(cost);
                 }
             }
+            // Emit per-model supported reasoning effort levels (WHAM-discovered)
+            if let Ok(guard) = state.codex_auth_reasoning_levels.try_read()
+                && let Some(levels) = guard.get(model_id.as_str())
+                && !levels.is_empty()
+            {
+                entry["reasoning_levels"] = json!(levels);
+            }
             all_models.push(entry);
         }
     }
@@ -345,10 +355,11 @@ pub async fn list_provider_models(
             model_ids = cached;
         } else {
             match crate::codex_auth::discover_codex_auth_models(&pool, &state.http_client).await {
-                Ok((discovered, meta_map, transport_map)) if !discovered.is_empty() => {
+                Ok((discovered, meta_map, transport_map, levels_map)) if !discovered.is_empty() => {
                     state.set_cached_models(&provider, discovered.clone()).await;
                     state.set_model_transports(transport_map).await;
                     state.set_codex_auth_metadata(meta_map).await;
+                    state.set_model_reasoning_levels(levels_map).await;
                     model_ids = discovered;
                 }
                 Ok(_empty) => {
@@ -413,6 +424,13 @@ pub async fn list_provider_models(
                     entry["cost"] = json!(cost);
                 }
             }
+            // Emit per-model supported reasoning effort levels (WHAM-discovered)
+            if let Ok(guard) = state.codex_auth_reasoning_levels.try_read()
+                && let Some(levels) = guard.get(model_id.as_str())
+                && !levels.is_empty()
+            {
+                entry["reasoning_levels"] = json!(levels);
+            }
             entry
         })
         .collect();
@@ -471,7 +489,7 @@ pub async fn refresh_models(
                 match crate::codex_auth::discover_codex_auth_models(&pool2, &state2.http_client)
                     .await
                 {
-                    Ok((models, meta_map, transport_map)) => {
+                    Ok((models, meta_map, transport_map, levels_map)) => {
                         tracing::info!(
                             provider = %pool2.name(),
                             count = models.len(),
@@ -480,6 +498,7 @@ pub async fn refresh_models(
                         state2.set_cached_models(pool2.name(), models).await;
                         state2.set_model_transports(transport_map).await;
                         state2.set_codex_auth_metadata(meta_map).await;
+                        state2.set_model_reasoning_levels(levels_map).await;
                     }
                     Err(e) => {
                         tracing::warn!(

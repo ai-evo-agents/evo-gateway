@@ -102,6 +102,9 @@ pub struct AppState {
     /// WHAM-discovered model metadata (context_window, reasoning, etc.).
     /// Key: model slug, Value: metadata.
     pub codex_auth_model_metadata: Arc<RwLock<HashMap<String, ModelMetadata>>>,
+    /// Per-model supported reasoning effort levels from WHAM discovery.
+    /// Key: model slug, Value: e.g. ["low", "medium", "high"] (non-"none" efforts).
+    pub codex_auth_reasoning_levels: Arc<RwLock<HashMap<String, Vec<String>>>>,
 }
 
 impl AppState {
@@ -134,6 +137,7 @@ impl AppState {
             copilot_auth,
             codex_auth_transport: Arc::new(RwLock::new(HashMap::new())),
             codex_auth_model_metadata: Arc::new(RwLock::new(HashMap::new())),
+            codex_auth_reasoning_levels: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -238,6 +242,23 @@ impl AppState {
     /// Store WHAM-discovered model metadata.
     pub async fn set_codex_auth_metadata(&self, map: HashMap<String, ModelMetadata>) {
         *self.codex_auth_model_metadata.write().await = map;
+    }
+
+    /// Get the supported reasoning effort levels for a codex-auth model.
+    /// Returns e.g. ["low", "medium", "high"] or empty vec if unknown.
+    #[allow(dead_code)]
+    pub async fn get_model_reasoning_levels(&self, model: &str) -> Vec<String> {
+        self.codex_auth_reasoning_levels
+            .read()
+            .await
+            .get(model)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Store per-model reasoning level lists from WHAM discovery.
+    pub async fn set_model_reasoning_levels(&self, map: HashMap<String, Vec<String>>) {
+        *self.codex_auth_reasoning_levels.write().await = map;
     }
 }
 

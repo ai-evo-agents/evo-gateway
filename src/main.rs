@@ -34,6 +34,7 @@ use state::AppState;
 use std::{net::SocketAddr, path::Path, sync::Arc};
 use tmux::TmuxManager;
 use tokio::sync::RwLock;
+use tower_http::cors::CorsLayer;
 use tracing::info;
 
 const DEFAULT_CONFIG_PATH: &str = "gateway.json";
@@ -262,7 +263,9 @@ async fn main() -> Result<()> {
     let mut app = Router::new()
         .route("/health", get(health::health_handler))
         .merge(routes::router().layer(from_fn_with_state(auth_state, auth_middleware)))
-        .layer(from_fn(middleware::request_logging));
+        .layer(from_fn(middleware::request_logging))
+        // Allow browser-based clients (e.g. dashboard at :3300) to call gateway directly
+        .layer(CorsLayer::permissive());
 
     // Add Socket.IO layer if enabled (intercepts /socket.io/ path)
     if let Some(layer) = socket_layer {
