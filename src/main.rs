@@ -10,6 +10,7 @@ mod google;
 mod health;
 mod middleware;
 mod oauth;
+mod providers_info;
 mod reliability;
 mod routes;
 mod service;
@@ -60,6 +61,11 @@ enum Commands {
         #[command(subcommand)]
         action: service::ServiceAction,
     },
+    /// Show supported provider types and setup instructions
+    Providers {
+        #[command(subcommand)]
+        action: Option<providers_info::ProvidersAction>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -104,6 +110,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Service { action }) => {
             return service::run_service_command(action).await;
+        }
+        Some(Commands::Providers { action }) => {
+            return providers_info::run_providers_command(action);
         }
         None => {} // Continue to start server
     }

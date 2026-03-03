@@ -218,6 +218,31 @@ claude
 
 ---
 
+## Provider Information
+
+The gateway includes a built-in reference for all 8 supported provider types. Use the `providers` subcommand to see setup instructions without leaving the terminal.
+
+```bash
+# List all provider types with auth methods
+evo-gateway providers
+
+# Show detailed setup guide for a specific type
+evo-gateway providers info open_ai_compatible
+evo-gateway providers info google
+evo-gateway providers info github_copilot
+
+# Common aliases work too
+evo-gateway providers info openai     # → open_ai_compatible
+evo-gateway providers info claude     # → claude_code
+evo-gateway providers info codex      # → codex_cli
+evo-gateway providers info gemini     # → google
+evo-gateway providers info copilot    # → github_copilot
+```
+
+Each `info` page includes: how the provider works, authentication steps, config fields, example `gateway.json` snippets, and relevant environment variables.
+
+---
+
 ## Configuration
 
 The gateway reads `gateway.json` at startup (auto-generated with defaults if missing). This file is managed by `evo-king`; do not edit it while the gateway is running in production.
@@ -378,6 +403,8 @@ evo-gateway/
     db.rs                 # Local libSQL database for credential storage (cursor/codex-auth)
     codex_auth.rs         # Codex Auth provider — OpenAI Responses API (SSE + WebSocket, OAuth token)
     oauth.rs              # OAuth2 PKCE browser flow for OpenAI authentication
+    providers_info.rs     # CLI: `evo-gateway providers` — per-type setup guides
+    service.rs            # CLI: `evo-gateway service` — launchd/systemd management
     routes/
       mod.rs              # Route registry
       openai.rs           # POST /v1/chat/completions, /v1/embeddings, GET /v1/models, GET /v1/models/:provider
@@ -404,7 +431,11 @@ cargo run --release
 # Run with auth enabled
 EVO_GATEWAY_AUTH=true cargo run --release
 
-# Run the CLI
+# List supported provider types and setup guides
+cargo run --bin evo-gateway -- providers
+cargo run --bin evo-gateway -- providers info openai
+
+# Run the auth key management CLI
 cargo run --bin evo-gateway-cli -- auth generate --name my-key
 
 # Run with debug logging
