@@ -117,6 +117,19 @@ pub async fn chat_completions(
                 crate::codex_auth::codex_auth_chat(&state, &pool, body, &actual_model).await
             }
         }
+        ProviderType::Google => {
+            if is_streaming(&body) {
+                crate::google::gemini_chat_streaming(&state, &pool, body, &actual_model).await
+            } else {
+                crate::google::gemini_chat(&state, &pool, body, &actual_model).await
+            }
+        }
+        ProviderType::GithubCopilot => {
+            let copilot_auth = state.copilot_auth.as_ref().ok_or_else(|| {
+                GatewayError::ConfigError("GitHub Copilot auth not initialized".into())
+            })?;
+            crate::github_copilot::copilot_chat(&state, &pool, copilot_auth, body).await
+        }
     }
 }
 
@@ -159,6 +172,18 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<Valu
         let provider_type = pool.provider_type();
         let mut model_ids: Vec<String> = pool.config.models.clone();
 
+        // For Ollama providers, use native /api/tags discovery (or cache)
+        if model_ids.is_empty() && is_ollama_provider(pool) {
+            if let Some(cached) = state
+                .get_cached_models(provider_name, std::time::Duration::from_secs(3600))
+                .await
+            {
+                model_ids = cached;
+            } else if let Ok(fetched) = fetch_ollama_models(&state, pool).await {
+                model_ids = fetched;
+            }
+        }
+
         // For OpenAI-compatible providers with no declared models,
         // try fetching from upstream
         if model_ids.is_empty()
@@ -183,23 +208,37 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<Valu
             model_ids.push("default".to_string());
         }
 
-        let type_str = match provider_type {
-            ProviderType::OpenAiCompatible => "open_ai_compatible",
-            ProviderType::Anthropic => "anthropic",
-            ProviderType::Cursor => "cursor",
-            ProviderType::ClaudeCode => "claude_code",
-            ProviderType::CodexCli => "codex_cli",
-            ProviderType::CodexAuth => "codex_auth",
-        };
+        let type_str = provider_type_str(provider_type);
 
         for model_id in &model_ids {
-            all_models.push(json!({
+            let mut entry = json!({
                 "id": format!("{provider_name}:{model_id}"),
                 "object": "model",
                 "owned_by": provider_name,
                 "provider": provider_name,
                 "provider_type": type_str,
-            }));
+            });
+            // Merge rich metadata when available
+            if let Some(ref metadata_map) = pool.config.model_metadata
+                && let Some(meta) = metadata_map.get(model_id.as_str())
+            {
+                if let Some(cw) = meta.context_window {
+                    entry["context_window"] = json!(cw);
+                }
+                if let Some(mt) = meta.max_tokens {
+                    entry["max_tokens"] = json!(mt);
+                }
+                if let Some(r) = meta.reasoning {
+                    entry["reasoning"] = json!(r);
+                }
+                if let Some(ref it) = meta.input_types {
+                    entry["input_types"] = json!(it);
+                }
+                if let Some(ref cost) = meta.cost {
+                    entry["cost"] = json!(cost);
+                }
+            }
+            all_models.push(entry);
         }
     }
 
@@ -218,6 +257,18 @@ pub async fn list_provider_models(
     let pool = state.get_pool(&provider).await?;
     let provider_type = pool.provider_type();
     let mut model_ids: Vec<String> = pool.config.models.clone();
+
+    // Ollama native discovery
+    if model_ids.is_empty() && is_ollama_provider(&pool) {
+        if let Some(cached) = state
+            .get_cached_models(&provider, std::time::Duration::from_secs(3600))
+            .await
+        {
+            model_ids = cached;
+        } else if let Ok(fetched) = fetch_ollama_models(&state, &pool).await {
+            model_ids = fetched;
+        }
+    }
 
     if model_ids.is_empty()
         && *provider_type == ProviderType::OpenAiCompatible
@@ -240,25 +291,38 @@ pub async fn list_provider_models(
         model_ids.push("default".to_string());
     }
 
-    let type_str = match provider_type {
-        ProviderType::OpenAiCompatible => "open_ai_compatible",
-        ProviderType::Anthropic => "anthropic",
-        ProviderType::Cursor => "cursor",
-        ProviderType::ClaudeCode => "claude_code",
-        ProviderType::CodexCli => "codex_cli",
-        ProviderType::CodexAuth => "codex_auth",
-    };
+    let type_str = provider_type_str(provider_type);
 
     let models: Vec<Value> = model_ids
         .iter()
         .map(|model_id| {
-            json!({
+            let mut entry = json!({
                 "id": format!("{provider}:{model_id}"),
                 "object": "model",
                 "owned_by": &provider,
                 "provider": &provider,
                 "provider_type": type_str,
-            })
+            });
+            if let Some(ref metadata_map) = pool.config.model_metadata
+                && let Some(meta) = metadata_map.get(model_id.as_str())
+            {
+                if let Some(cw) = meta.context_window {
+                    entry["context_window"] = json!(cw);
+                }
+                if let Some(mt) = meta.max_tokens {
+                    entry["max_tokens"] = json!(mt);
+                }
+                if let Some(r) = meta.reasoning {
+                    entry["reasoning"] = json!(r);
+                }
+                if let Some(ref it) = meta.input_types {
+                    entry["input_types"] = json!(it);
+                }
+                if let Some(ref cost) = meta.cost {
+                    entry["cost"] = json!(cost);
+                }
+            }
+            entry
         })
         .collect();
 
@@ -266,6 +330,68 @@ pub async fn list_provider_models(
         "object": "list",
         "data": models,
     })))
+}
+
+/// Map ProviderType enum to its serialized string name for JSON responses.
+fn provider_type_str(pt: &ProviderType) -> &'static str {
+    match pt {
+        ProviderType::OpenAiCompatible => "open_ai_compatible",
+        ProviderType::Anthropic => "anthropic",
+        ProviderType::Cursor => "cursor",
+        ProviderType::ClaudeCode => "claude_code",
+        ProviderType::CodexCli => "codex_cli",
+        ProviderType::CodexAuth => "codex_auth",
+        ProviderType::Google => "google",
+        ProviderType::GithubCopilot => "github_copilot",
+    }
+}
+
+/// Fetch models from an Ollama instance via native `/api/tags` endpoint.
+///
+/// Strips `/v1` suffix from the configured base_url to reach the native API,
+/// then queries `/api/tags` for the model list and `/api/show` per model to
+/// get context window sizes. Results are cached for 1 hour.
+async fn fetch_ollama_models(
+    state: &AppState,
+    pool: &crate::state::ProviderPool,
+) -> Result<Vec<String>, GatewayError> {
+    // Strip /v1 suffix to get native Ollama base
+    let base = pool
+        .config
+        .base_url
+        .trim_end_matches('/')
+        .trim_end_matches("/v1");
+    let url = format!("{base}/api/tags");
+
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state.http_client.get(&url).send(),
+    )
+    .await
+    .map_err(|_| GatewayError::UpstreamError("Ollama /api/tags fetch timed out".into()))?
+    .map_err(|e| GatewayError::UpstreamError(e.to_string()))?;
+
+    let json: Value = resp
+        .json()
+        .await
+        .map_err(|e| GatewayError::UpstreamError(e.to_string()))?;
+
+    let models: Vec<String> = json["models"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m["name"].as_str().map(|s| s.to_string()))
+                .take(200) // cap at 200 models
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Cache the results for 1 hour
+    if !models.is_empty() {
+        state.set_cached_models(pool.name(), models.clone()).await;
+    }
+
+    Ok(models)
 }
 
 /// Attempt to fetch model list from an OpenAI-compatible provider's /models endpoint.
@@ -382,6 +508,11 @@ async fn proxy_json(req: RequestBuilder) -> Result<Json<Value>, GatewayError> {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Check if a provider is an Ollama instance (by name or base_url heuristic).
+fn is_ollama_provider(pool: &crate::state::ProviderPool) -> bool {
+    pool.name() == "ollama" || pool.config.base_url.contains("11434")
+}
 
 /// Parse `"provider:model"` → `(Some("provider"), "model")`.
 /// Bare `"model"` → `(None, "model")`.

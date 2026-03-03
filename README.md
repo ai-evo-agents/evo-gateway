@@ -1,8 +1,8 @@
 # evo-gateway
 
-API aggregator for the Evo self-evolution agent system. Provides a unified API interface over multiple LLM providers (OpenAI, Anthropic, Cursor, Claude Code, Codex CLI, Codex Responses API, local LLMs via Ollama/vLLM), so agents in the Evo system make all external API calls through a single, configurable gateway.
+API aggregator for the Evo self-evolution agent system. Provides a unified API interface over multiple LLM providers (OpenAI, Anthropic, Google Gemini, GitHub Copilot, Cursor, Claude Code, Codex CLI, Codex Responses API, local LLMs via Ollama/vLLM, and 15+ additional cloud providers), so agents in the Evo system make all external API calls through a single, configurable gateway.
 
-Supports **SSE streaming** for AI coding tools (Codex CLI, Cursor, Claude Code, Codex Auth) and optional **API key authentication** for shared deployments.
+Supports **SSE streaming** for all providers and optional **API key authentication** for shared deployments.
 
 ---
 
@@ -33,14 +33,21 @@ Client Request
       |                                         |
       +---> POST /v1/embeddings           -->   +---> Anthropic proxy
       |                                         |
-      +---> GET  /v1/models               -->   +---> Cursor proxy (via cursor-agent CLI)
+      +---> GET  /v1/models               -->   +---> Google Gemini (native API)
       +---> GET  /v1/models/:provider     -->   |
-      |                                         +---> Claude Code proxy (via claude CLI)
+      |                                         +---> GitHub Copilot (token exchange)
       +---> POST /api/generate            -->   |
-      +---> POST /api/chat                -->   +---> Codex CLI proxy (via codex CLI)
+      +---> POST /api/chat                -->   +---> Cursor proxy (via cursor-agent CLI)
+                                                |
+                                                +---> Claude Code proxy (via claude CLI)
+                                                |
+                                                +---> Codex CLI proxy (via codex CLI)
                                                 |     + PTY model discovery (portable-pty)
                                                 |
                                                 +---> Local LLM proxy (Ollama / vLLM)
+                                                |     + native /api/tags discovery
+                                                |
+                                                +---> 15+ cloud providers (OpenAI-compat)
                                           (routing by config / model prefix)
 
 Middleware stack (applied to API routes):
@@ -312,6 +319,10 @@ The OpenAI-compatible endpoint supports `"model": "provider:model"` syntax:
 { "model": "codex-cli:o4-mini", "messages": [...] }
 { "model": "codex-auth:codex-mini-latest", "messages": [...] }
 { "model": "codex-auth:gpt-4.1", "messages": [...] }
+{ "model": "google:gemini-2.5-pro", "messages": [...] }
+{ "model": "github-copilot:gpt-4o", "messages": [...] }
+{ "model": "huggingface:Qwen/Qwen3-235B-A22B", "messages": [...] }
+{ "model": "openrouter:meta-llama/llama-3.3-70b-instruct", "messages": [...] }
 ```
 
 If no provider prefix is given, the first enabled provider is used by default.
@@ -321,10 +332,13 @@ If no provider prefix is given, the first enabled provider is used by default.
 The `/v1/models` endpoint aggregates models from all enabled providers:
 
 - **OpenAI-compatible providers** — fetches from upstream `{base_url}/models` if no models are declared in config
+- **Ollama providers** — uses native `/api/tags` for model listing + `/api/show` for context window per model (cached 1 hour)
 - **CLI providers (Codex CLI)** — discovers models dynamically via PTY-based introspection (see below)
-- **Other providers** — returns a `"default"` model entry if no models are configured
+- **Google Gemini** — returns configured models list with metadata
+- **GitHub Copilot** — returns configured models list
+- **Other providers** — returns configured models or a `"default"` entry
 
-Model IDs are returned in `provider:model` format (e.g., `"openai:gpt-4o"`, `"codex-cli:gpt-5.3-codex"`), matching the routing syntax used in chat requests.
+Model IDs are returned in `provider:model` format (e.g., `"openai:gpt-4o"`, `"google:gemini-2.5-pro"`, `"github-copilot:gpt-4o"`), matching the routing syntax used in chat requests. When `model_metadata` is configured for a provider, the `/v1/models` response includes enriched fields (`context_window`, `max_tokens`, `reasoning`, `input_types`, cost).
 
 ### Dynamic CLI Model Discovery (Codex CLI)
 
@@ -359,6 +373,8 @@ evo-gateway/
     cursor.rs             # Cursor provider — cursor-agent CLI integration (chat + streaming)
     claude_code.rs        # Claude Code provider — claude CLI integration (chat + streaming)
     codex_cli.rs          # Codex CLI provider — codex CLI integration (chat + streaming + PTY model discovery)
+    google.rs             # Google Gemini provider — native generateContent API (request/response conversion, streaming)
+    github_copilot.rs     # GitHub Copilot provider — token exchange + OpenAI-compatible proxy
     db.rs                 # Local libSQL database for credential storage (cursor/codex-auth)
     codex_auth.rs         # Codex Auth provider — OpenAI Responses API (SSE + WebSocket, OAuth token)
     oauth.rs              # OAuth2 PKCE browser flow for OpenAI authentication
@@ -431,6 +447,12 @@ cargo clippy -- -D warnings
 | `RUST_LOG` | `info` | Log level filter |
 | `EVO_LOG_DIR` | `./logs` | Structured log output directory |
 | `EVO_OTLP_ENDPOINT` | `http://localhost:3300` | OTLP HTTP endpoint for distributed tracing (evo-king) |
+| `GEMINI_API_KEY` | — | Google Gemini API key (also `GOOGLE_API_KEY`) |
+| `COPILOT_GITHUB_TOKEN` | — | GitHub PAT for Copilot token exchange (also `GH_TOKEN`, `GITHUB_TOKEN`) |
+| `HUGGINGFACE_API_KEY` | — | HuggingFace Inference API key |
+| `OPENROUTER_API_KEY` | — | OpenRouter API key |
+| `NVIDIA_API_KEY` | — | NVIDIA NIM API key |
+| `MOONSHOT_API_KEY` | — | Moonshot (Kimi) API key |
 
 > **Note:** The `codex-auth` provider always stores its token in `~/.evo-gateway/gateway.db`, independent of `EVO_GATEWAY_DB_PATH`, so the auth command and running server always share the same credentials.
 

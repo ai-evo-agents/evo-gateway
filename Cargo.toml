@@ -1,6 +1,6 @@
 [package]
 name = "evo-gateway"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 
 [lib]
@@ -46,3 +46,4 @@ dirs = "6"
 tokio-tungstenite = { version = "0.26", features = ["native-tls-vendored"] }
 futures-util = { version = "0.3", features = ["sink"] }
 base64 = "0.22"
+urlencoding = "2"

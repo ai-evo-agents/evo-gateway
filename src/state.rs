@@ -1,4 +1,5 @@
 use crate::error::GatewayError;
+use crate::github_copilot::CopilotAuth;
 use crate::tmux::TmuxManager;
 use evo_common::config::{
     GatewayConfig, ProviderConfig, ProviderType, ReliabilityConfig, RoutingConfig,
@@ -93,6 +94,8 @@ pub struct AppState {
     pub reliability: Option<ReliabilityConfig>,
     /// Hint-based model routing config (None = no hint routing).
     pub routing: Option<RoutingConfig>,
+    /// GitHub Copilot token manager (initialized when a GithubCopilot provider exists).
+    pub copilot_auth: Option<Arc<CopilotAuth>>,
 }
 
 impl AppState {
@@ -101,6 +104,13 @@ impl AppState {
         tmux_manager: Option<Arc<TmuxManager>>,
         io: Option<SocketIo>,
     ) -> Self {
+        // Initialize Copilot auth if any GithubCopilot provider is configured
+        let copilot_auth = config
+            .providers
+            .iter()
+            .any(|p| p.provider_type == ProviderType::GithubCopilot && p.enabled)
+            .then(|| Arc::new(CopilotAuth::new()));
+
         let pools = build_pools(config.providers);
         let http_client = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
@@ -115,6 +125,7 @@ impl AppState {
             io,
             reliability: config.reliability,
             routing: config.routing,
+            copilot_auth,
         }
     }
 
