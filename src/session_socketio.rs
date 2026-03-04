@@ -29,123 +29,126 @@ use tracing::{debug, error, info, warn};
 /// Register all Socket.IO event handlers for session management.
 pub fn register_handlers(io: SocketIo, state: Arc<AppState>) {
     io.ns("/", move |socket: SocketRef| {
-        info!(sid = %socket.id, "agent connected to gateway Socket.IO");
+        let state = state.clone();
+        async move {
+            info!(sid = %socket.id, "agent connected to gateway Socket.IO");
 
-        let s_create = Arc::clone(&state);
-        let s_input = Arc::clone(&state);
-        let s_keys = Arc::clone(&state);
-        let s_capture = Arc::clone(&state);
-        let s_kill = Arc::clone(&state);
-        let s_list = Arc::clone(&state);
-        let s_subscribe = Arc::clone(&state);
-        let s_disconnect = Arc::clone(&state);
+            let s_create = Arc::clone(&state);
+            let s_input = Arc::clone(&state);
+            let s_keys = Arc::clone(&state);
+            let s_capture = Arc::clone(&state);
+            let s_kill = Arc::clone(&state);
+            let s_list = Arc::clone(&state);
+            let s_subscribe = Arc::clone(&state);
+            let s_disconnect = Arc::clone(&state);
 
-        // session:create — create a new tmux session
-        // Payload: { provider: string, command?: string[], mode?: "ephemeral"|"persistent", env?: {} }
-        // ACK:    { session_id: string, status: "running" } | { error: string }
-        socket.on(
-            "session:create",
-            move |s: SocketRef, Data::<serde_json::Value>(data), ack: AckSender| {
-                let state = Arc::clone(&s_create);
-                async move {
-                    let result = handle_create(s, data, &state).await;
-                    let _ = ack.send(&result);
-                }
-            },
-        );
+            // session:create — create a new tmux session
+            // Payload: { provider: string, command?: string[], mode?: "ephemeral"|"persistent", env?: {} }
+            // ACK:    { session_id: string, status: "running" } | { error: string }
+            socket.on(
+                "session:create",
+                move |s: SocketRef, Data::<serde_json::Value>(data), ack: AckSender| {
+                    let state = Arc::clone(&s_create);
+                    async move {
+                        let result = handle_create(s, data, &state).await;
+                        let _ = ack.send(&result);
+                    }
+                },
+            );
 
-        // session:input — send text input to a session (appends Enter)
-        // Payload: { session_id: string, input: string }
-        // ACK:    { ok: true } | { error: string }
-        socket.on(
-            "session:input",
-            move |_s: SocketRef, Data::<serde_json::Value>(data), ack: AckSender| {
-                let state = Arc::clone(&s_input);
-                async move {
-                    let result = handle_input(data, &state).await;
-                    let _ = ack.send(&result);
-                }
-            },
-        );
+            // session:input — send text input to a session (appends Enter)
+            // Payload: { session_id: string, input: string }
+            // ACK:    { ok: true } | { error: string }
+            socket.on(
+                "session:input",
+                move |_s: SocketRef, Data::<serde_json::Value>(data), ack: AckSender| {
+                    let state = Arc::clone(&s_input);
+                    async move {
+                        let result = handle_input(data, &state).await;
+                        let _ = ack.send(&result);
+                    }
+                },
+            );
 
-        // session:keys — send raw key sequences (e.g., "C-c", "Escape", "Enter")
-        // Payload: { session_id: string, keys: string }
-        // ACK:    { ok: true } | { error: string }
-        socket.on(
-            "session:keys",
-            move |_s: SocketRef, Data::<serde_json::Value>(data), ack: AckSender| {
-                let state = Arc::clone(&s_keys);
-                async move {
-                    let result = handle_keys(data, &state).await;
-                    let _ = ack.send(&result);
-                }
-            },
-        );
+            // session:keys — send raw key sequences (e.g., "C-c", "Escape", "Enter")
+            // Payload: { session_id: string, keys: string }
+            // ACK:    { ok: true } | { error: string }
+            socket.on(
+                "session:keys",
+                move |_s: SocketRef, Data::<serde_json::Value>(data), ack: AckSender| {
+                    let state = Arc::clone(&s_keys);
+                    async move {
+                        let result = handle_keys(data, &state).await;
+                        let _ = ack.send(&result);
+                    }
+                },
+            );
 
-        // session:capture — capture current pane content (full scrollback)
-        // Payload: { session_id: string }
-        // ACK:    { content: string } | { error: string }
-        socket.on(
-            "session:capture",
-            move |_s: SocketRef, Data::<serde_json::Value>(data), ack: AckSender| {
-                let state = Arc::clone(&s_capture);
-                async move {
-                    let result = handle_capture(data, &state).await;
-                    let _ = ack.send(&result);
-                }
-            },
-        );
+            // session:capture — capture current pane content (full scrollback)
+            // Payload: { session_id: string }
+            // ACK:    { content: string } | { error: string }
+            socket.on(
+                "session:capture",
+                move |_s: SocketRef, Data::<serde_json::Value>(data), ack: AckSender| {
+                    let state = Arc::clone(&s_capture);
+                    async move {
+                        let result = handle_capture(data, &state).await;
+                        let _ = ack.send(&result);
+                    }
+                },
+            );
 
-        // session:kill — kill a session
-        // Payload: { session_id: string }
-        // ACK:    { ok: true } | { error: string }
-        socket.on(
-            "session:kill",
-            move |_s: SocketRef, Data::<serde_json::Value>(data), ack: AckSender| {
-                let state = Arc::clone(&s_kill);
-                async move {
-                    let result = handle_kill(data, &state).await;
-                    let _ = ack.send(&result);
-                }
-            },
-        );
+            // session:kill — kill a session
+            // Payload: { session_id: string }
+            // ACK:    { ok: true } | { error: string }
+            socket.on(
+                "session:kill",
+                move |_s: SocketRef, Data::<serde_json::Value>(data), ack: AckSender| {
+                    let state = Arc::clone(&s_kill);
+                    async move {
+                        let result = handle_kill(data, &state).await;
+                        let _ = ack.send(&result);
+                    }
+                },
+            );
 
-        // session:list — list all managed sessions
-        // Payload: {} (empty)
-        // ACK:    { sessions: [...] }
-        socket.on(
-            "session:list",
-            move |_s: SocketRef, Data::<serde_json::Value>(_data), ack: AckSender| {
-                let state = Arc::clone(&s_list);
-                async move {
-                    let result = handle_list(&state).await;
-                    let _ = ack.send(&result);
-                }
-            },
-        );
+            // session:list — list all managed sessions
+            // Payload: {} (empty)
+            // ACK:    { sessions: [...] }
+            socket.on(
+                "session:list",
+                move |_s: SocketRef, Data::<serde_json::Value>(_data), ack: AckSender| {
+                    let state = Arc::clone(&s_list);
+                    async move {
+                        let result = handle_list(&state).await;
+                        let _ = ack.send(&result);
+                    }
+                },
+            );
 
-        // session:subscribe — join a session's output room
-        // Payload: { session_id: string }
-        // After subscribing, client receives "session:output" events
-        socket.on(
-            "session:subscribe",
-            move |s: SocketRef, Data::<serde_json::Value>(data)| {
-                let state = Arc::clone(&s_subscribe);
-                async move {
-                    handle_subscribe(s, data, &state).await;
-                }
-            },
-        );
+            // session:subscribe — join a session's output room
+            // Payload: { session_id: string }
+            // After subscribing, client receives "session:output" events
+            socket.on(
+                "session:subscribe",
+                move |s: SocketRef, Data::<serde_json::Value>(data)| {
+                    let state = Arc::clone(&s_subscribe);
+                    async move {
+                        handle_subscribe(s, data, &state).await;
+                    }
+                },
+            );
 
-        // Cleanup on disconnect: kill owned ephemeral sessions
-        socket.on_disconnect(
-            move |s: SocketRef, _reason: socketioxide::socket::DisconnectReason| {
-                let state = Arc::clone(&s_disconnect);
-                async move {
-                    handle_disconnect(s, &state).await;
-                }
-            },
-        );
+            // Cleanup on disconnect: kill owned ephemeral sessions
+            socket.on_disconnect(
+                move |s: SocketRef, _reason: socketioxide::socket::DisconnectReason| {
+                    let state = Arc::clone(&s_disconnect);
+                    async move {
+                        handle_disconnect(s, &state).await;
+                    }
+                },
+            );
+        }
     });
 }
 
@@ -204,7 +207,7 @@ async fn handle_create(
         Ok(session_id) => {
             // Auto-join the creator to the session's output room
             let room = format!("session:{session_id}");
-            let _ = socket.join(room);
+            socket.join(room);
 
             // Spawn output relay task
             if let Some(io) = &state.io {
@@ -341,7 +344,7 @@ async fn handle_subscribe(socket: SocketRef, data: serde_json::Value, state: &Ap
     }
 
     let room = format!("session:{session_id}");
-    let _ = socket.join(room);
+    socket.join(room);
     debug!(sid = %socket.id, session = %session_id, "client subscribed to session output");
 }
 
@@ -381,14 +384,17 @@ fn spawn_output_relay(manager: &TmuxManager, session_id: &str, io: SocketIo) {
                         "timestamp": event.timestamp.to_rfc3339(),
                         "is_final": event.is_final,
                     });
-                    let _ = io.to(room.clone()).emit("session:output", &payload);
+                    let _ = io.to(room.clone()).emit("session:output", &payload).await;
 
                     if event.is_final {
                         let status_payload = json!({
                             "session_id": &sid,
                             "status": "completed",
                         });
-                        let _ = io.to(room.clone()).emit("session:status", &status_payload);
+                        let _ = io
+                            .to(room.clone())
+                            .emit("session:status", &status_payload)
+                            .await;
                         break;
                     }
                 }

@@ -16,7 +16,7 @@ name = "evo-gateway-cli"
 path = "src/bin/cli.rs"
 
 [dependencies]
-axum = "0.7"
+axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json", "stream", "native-tls-vendored"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -41,7 +41,7 @@ async-stream = "0.3"
 tokio-stream = "0.1"
 portable-pty = "0.8"
 regex = "1"
-socketioxide = "0.14"
+socketioxide = "0.18"
 dirs = "6"
 tokio-tungstenite = { version = "0.26", features = ["native-tls-vendored"] }
 futures-util = { version = "0.3", features = ["sink"] }
